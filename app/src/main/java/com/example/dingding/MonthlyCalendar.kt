@@ -1,9 +1,17 @@
 package com.example.dingding
 
 import android.app.DatePickerDialog
+import android.app.PendingIntent
 import android.app.TimePickerDialog
+import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProvider
+import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
-import android.view.Gravity
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import android.widget.RemoteViews
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -34,6 +42,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -48,6 +58,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -66,6 +77,8 @@ import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.time.temporal.TemporalAdjusters
 import java.util.Locale
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 
 @Composable
 fun MonthlyCalendar(modifier: Modifier = Modifier) {
@@ -92,6 +105,47 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var adjustFormula by remember { mutableStateOf("") }
     var adjustDate by remember { mutableStateOf(LocalDate.now().minusDays(1)) }
     var adjustTime by remember { mutableStateOf(LocalTime.now()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                punches.clear()
+                punches.addAll(loadPunches(context))
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+    DisposableEffect(context) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == PunchWidgetProvider.ACTION_PUNCH) {
+                    punches.clear()
+                    punches.addAll(loadPunches(context))
+                }
+            }
+        }
+        val filter = IntentFilter(PunchWidgetProvider.ACTION_PUNCH)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+        onDispose {
+            context.unregisterReceiver(receiver)
+        }
+    }
+    LaunchedEffect(Unit) {
+        purgePreviousMonthData(
+            today = LocalDate.now(),
+            punches = punches,
+            adjustInfo = { adjustInfo },
+            setAdjustInfo = { adjustInfo = it },
+            context = context
+        )
+    }
     val workdayCount by remember {
         derivedStateOf { countWorkdays(yearMonth, overrides) }
     }
@@ -116,12 +170,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             val filtered = punches.filter { ts ->
                 selectedDate?.let { timestampToLocalDate(ts) == it } ?: true
             }
-            if (filtered.isEmpty()) {
+            val sorted = filtered.sorted()
+            if (sorted.isEmpty()) {
                 selectedDate?.let { "$it 无打卡记录" }
             } else {
-                filtered.mapIndexed { index, ts ->
+                sorted.mapIndexed { index, ts ->
                     val label = if (index % 2 == 0) "上班" else "下班"
-                    "$label：${formatTimestamp(ts, locale)}"
+                    "${index + 1}. $label：${formatTimestamp(ts, locale)}"
                 }.joinToString("\n")
             }
         }
@@ -638,6 +693,90 @@ private fun buildMonthGrid(month: YearMonth): List<List<LocalDate>> {
 
 private fun isDefaultWorkday(date: LocalDate): Boolean {
     return date.dayOfWeek.value in DayOfWeek.MONDAY.value..DayOfWeek.FRIDAY.value
+}
+
+private fun purgePreviousMonthData(
+    today: LocalDate,
+    punches: SnapshotStateList<Long>,
+    adjustInfo: () -> AdjustInfo?,
+    setAdjustInfo: (AdjustInfo?) -> Unit,
+    context: Context
+) {
+    if (today.dayOfMonth != 1) return
+    val previousMonth = YearMonth.from(today.minusMonths(1))
+    val hasPreviousMonthPunch = punches.any { ts ->
+        YearMonth.from(timestampToLocalDate(ts)) == previousMonth
+    }
+    val hasPreviousAdjust = adjustInfo()?.month == previousMonth
+    if (!hasPreviousMonthPunch && !hasPreviousAdjust) return
+    val removedPunches = punches.removeAll { ts ->
+        YearMonth.from(timestampToLocalDate(ts)) == previousMonth
+    }
+    val clearedAdjust = if (hasPreviousAdjust) {
+        setAdjustInfo(null)
+        true
+    } else {
+        false
+    }
+    if (removedPunches) {
+        savePunches(context, punches)
+    }
+    if (clearedAdjust) {
+        saveAdjustInfo(context, null)
+    }
+}
+
+fun addPunchTimestamp(context: Context, timestamp: Long = System.currentTimeMillis()) {
+    val updated = loadPunches(context).toMutableList().apply {
+        add(0, timestamp)
+    }
+    savePunches(context, updated)
+}
+
+class PunchWidgetProvider : AppWidgetProvider() {
+
+    override fun onUpdate(
+        context: Context,
+        appWidgetManager: AppWidgetManager,
+        appWidgetIds: IntArray
+    ) {
+        appWidgetIds.forEach { id ->
+            appWidgetManager.updateAppWidget(id, createRemoteViews(context))
+        }
+    }
+
+    override fun onReceive(context: Context, intent: Intent) {
+        super.onReceive(context, intent)
+        if (intent.action == ACTION_PUNCH) {
+            addPunchTimestamp(context)
+            Toast.makeText(context, "打卡成功", Toast.LENGTH_SHORT).show()
+            val appWidgetManager = AppWidgetManager.getInstance(context)
+            val component = ComponentName(context, PunchWidgetProvider::class.java)
+            val ids = appWidgetManager.getAppWidgetIds(component)
+            onUpdate(context, appWidgetManager, ids)
+        }
+    }
+
+    private fun createRemoteViews(context: Context): RemoteViews {
+        val views = RemoteViews(context.packageName, R.layout.widget_punch)
+        val isClockInNext = loadPunches(context).size % 2 == 0
+        views.setTextViewText(R.id.widgetButton, if (isClockInNext) "上班打卡" else "下班打卡")
+        val intent = Intent(context, PunchWidgetProvider::class.java).apply {
+            action = ACTION_PUNCH
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            0,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        views.setOnClickPendingIntent(R.id.widgetButton, pendingIntent)
+        return views
+    }
+
+    companion object {
+        const val ACTION_PUNCH = "com.example.dingding.action.PUNCH"
+    }
 }
 
 private const val PREF_NAME = "dingding_calendar"
