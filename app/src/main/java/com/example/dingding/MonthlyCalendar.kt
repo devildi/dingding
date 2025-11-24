@@ -57,6 +57,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
@@ -84,7 +85,20 @@ import androidx.lifecycle.LifecycleEventObserver
 fun MonthlyCalendar(modifier: Modifier = Modifier) {
     val today = remember { LocalDate.now() }
     val yearMonth = remember { YearMonth.from(today) }
-    val weeks = remember { buildMonthGrid(yearMonth) }
+    val configuration = LocalConfiguration.current
+    val isSquareishScreen = remember(configuration.screenWidthDp, configuration.screenHeightDp) {
+        val height = configuration.screenHeightDp.takeIf { it > 0 } ?: 1
+        val ratio = configuration.screenWidthDp.toFloat() / height.toFloat()
+        ratio in 0.85f..1.15f
+    }
+    val weeks = remember(yearMonth, isSquareishScreen, today) {
+        val monthGrid = buildMonthGrid(yearMonth)
+        if (isSquareishScreen) {
+            monthGrid.firstOrNull { week -> week.contains(today) }?.let { listOf(it) } ?: listOf(monthGrid.first())
+        } else {
+            monthGrid
+        }
+    }
     val context = LocalContext.current
     val overrides = remember(context) {
         mutableStateMapOf<LocalDate, Boolean>().apply {
@@ -167,12 +181,11 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var showResetAdjust by remember { mutableStateOf(false) }
     val punchDisplay by remember {
         derivedStateOf {
-            val filtered = punches.filter { ts ->
-                selectedDate?.let { timestampToLocalDate(ts) == it } ?: true
-            }
+            val targetDate = selectedDate ?: today
+            val filtered = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }
             val sorted = filtered.sorted()
             if (sorted.isEmpty()) {
-                selectedDate?.let { "$it 无打卡记录" }
+                "$targetDate 无打卡记录"
             } else {
                 sorted.mapIndexed { index, ts ->
                     val label = if (index % 2 == 0) "上班" else "下班"
@@ -511,7 +524,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         Toast.makeText(contextForPicker, "请输入精确工时", Toast.LENGTH_SHORT).show()
                         return@TextButton
                     }
-                    val endDateTime = LocalDateTime.of(adjustDate, adjustTime)
+                    val endDateTime = if (adjustDate == today) {
+                        LocalDateTime.of(adjustDate, adjustTime)
+                    } else {
+                        // 非当天选择时，覆盖到该日 23:59:59.999999999
+                        adjustDate.plusDays(1).atStartOfDay().minusNanos(1)
+                    }
                     if (YearMonth.from(adjustDate) != yearMonth) {
                         Toast.makeText(contextForPicker, "请选择当前月份的日期", Toast.LENGTH_SHORT).show()
                         return@TextButton
@@ -575,6 +593,9 @@ private fun WorkSummary(
     val locale = LocalContext.current.resources.configuration.locales[0] ?: Locale.getDefault()
     val totalHoursLabel = remember(locale, totalHours) { String.format(locale, "%.1f", totalHours) }
     val monthlyHoursLabel = remember(locale, monthlyHours) { String.format(locale, "%.1f", monthlyHours) }
+    val remainingHoursLabel = remember(locale, totalHours, monthlyHours) {
+        String.format(locale, "%.1f", totalHours - monthlyHours)
+    }
     val todayHoursLabel = remember(locale, todayHours) { String.format(locale, "%.1f", todayHours) }
     Surface(
         modifier = modifier.fillMaxWidth(),
@@ -592,6 +613,11 @@ private fun WorkSummary(
             )
             Text(
                 text = "本月已打卡：${monthlyHoursLabel}小时",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "还需打卡：${remainingHoursLabel}小时",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
