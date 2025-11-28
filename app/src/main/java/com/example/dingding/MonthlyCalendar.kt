@@ -91,9 +91,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         val ratio = configuration.screenWidthDp.toFloat() / height.toFloat()
         ratio in 0.85f..1.15f
     }
-    val weeks = remember(yearMonth, isSquareishScreen, today) {
+    val isLandscape = remember(configuration.screenWidthDp, configuration.screenHeightDp) {
+        configuration.screenWidthDp > configuration.screenHeightDp
+    }
+    val useWeekView = isSquareishScreen || isLandscape
+    val weeks = remember(yearMonth, useWeekView, today) {
         val monthGrid = buildMonthGrid(yearMonth)
-        if (isSquareishScreen) {
+        if (useWeekView) {
             monthGrid.firstOrNull { week -> week.contains(today) }?.let { listOf(it) } ?: listOf(monthGrid.first())
         } else {
             monthGrid
