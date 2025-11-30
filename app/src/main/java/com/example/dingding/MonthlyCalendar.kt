@@ -597,8 +597,11 @@ private fun WorkSummary(
     val locale = LocalContext.current.resources.configuration.locales[0] ?: Locale.getDefault()
     val totalHoursLabel = remember(locale, totalHours) { String.format(locale, "%.1f", totalHours) }
     val monthlyHoursLabel = remember(locale, monthlyHours) { String.format(locale, "%.1f", monthlyHours) }
-    val remainingHoursLabel = remember(locale, totalHours, monthlyHours) {
-        String.format(locale, "%.1f", totalHours - monthlyHours)
+    val remaining = totalHours - monthlyHours
+    val isOvertime = remaining <= 0
+    val displayHours = if (isOvertime) -remaining else remaining
+    val displayHoursLabel = remember(locale, displayHours) {
+        String.format(locale, "%.1f", displayHours)
     }
     val todayHoursLabel = remember(locale, todayHours) { String.format(locale, "%.1f", todayHours) }
     Surface(
@@ -621,7 +624,7 @@ private fun WorkSummary(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
-                text = "还需打卡：${remainingHoursLabel}小时",
+                text = if (isOvertime) "本月已多打：${displayHoursLabel}小时" else "还需打卡：${displayHoursLabel}小时",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
