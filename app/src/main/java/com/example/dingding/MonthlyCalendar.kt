@@ -62,6 +62,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.draw.scale
 import kotlinx.coroutines.Job
@@ -167,6 +169,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     val workdayCount by remember {
         derivedStateOf { countWorkdays(yearMonth, overrides) }
     }
+    val workdaysUpToToday by remember {
+        derivedStateOf { countWorkdaysUpToDate(yearMonth, today, overrides) }
+    }
     val totalWorkHours by remember {
         derivedStateOf { workdayCount * 7.5 }
     }
@@ -191,10 +196,32 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             if (sorted.isEmpty()) {
                 "$targetDate 无打卡记录"
             } else {
-                sorted.mapIndexed { index, ts ->
+                val displayLines = sorted.mapIndexed { index, ts ->
                     val label = if (index % 2 == 0) "上班" else "下班"
                     "${index + 1}. $label：${formatTimestamp(ts, locale)}"
-                }.joinToString("\n")
+                }.toMutableList()
+                
+                // 如果是今天且打卡记录是奇数条（有上班卡但没下班卡）
+                if (targetDate == today && sorted.size % 2 == 1) {
+                    // 计算差值：理论应打卡小时数 - 实际已打卡小时数
+                    val workdaysUpToToday = countWorkdaysUpToDate(yearMonth, today, overrides.toMap())
+                    val theoreticalHours = workdaysUpToToday * 7.5
+                    val difference = theoreticalHours - monthHours
+                    
+                    // 只有当差值 >= 0 时才显示建议下班时间
+                    if (difference >= 0) {
+                        val lastClockInTimestamp = sorted.last()
+                        val suggestedClockOutMillis = lastClockInTimestamp + (difference * 3_600_000).toLong()
+                        val suggestedTime = LocalDateTime.ofInstant(
+                            Instant.ofEpochMilli(suggestedClockOutMillis),
+                            ZoneId.systemDefault()
+                        )
+                        val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", locale)
+                        displayLines.add("建议下班时间：${suggestedTime.format(timeFormatter)}")
+                    }
+                }
+                
+                displayLines.joinToString("\n")
             }
         }
     }
@@ -315,7 +342,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             modifier = Modifier
                 .weight(1f)
                 .aspectRatio(1f)
-                .padding(2.dp)
+                .padding(2.dp),
+                            isSelected = date == selectedDate
                         )
                     }
                 }
@@ -324,7 +352,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 workdays = workdayCount,
                 totalHours = totalWorkHours,
                 monthlyHours = monthHours,
-                todayHours = todayHours
+                todayHours = todayHours,
+                workdaysUpToToday = workdaysUpToToday
             )
             Surface(
                 modifier = Modifier
@@ -342,10 +371,24 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         .verticalScroll(scrollState)
                 ) {
                     punchDisplay?.let { text ->
+                        val lines = text.split("\n")
+                        val annotatedString = androidx.compose.ui.text.buildAnnotatedString {
+                            lines.forEachIndexed { index, line ->
+                                if (index > 0) append("\n")
+                                if (line.startsWith("建议下班时间：")) {
+                                    withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.error)) {
+                                        append(line)
+                                    }
+                                } else {
+                                    withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                                        append(line)
+                                    }
+                                }
+                            }
+                        }
                         Text(
-                            text = text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            text = annotatedString,
+                            style = MaterialTheme.typography.bodyMedium
                         )
                     }
                 }
@@ -592,6 +635,7 @@ private fun WorkSummary(
     totalHours: Double,
     monthlyHours: Double,
     todayHours: Double,
+    workdaysUpToToday: Int,
     modifier: Modifier = Modifier
 ) {
     val locale = LocalContext.current.resources.configuration.locales[0] ?: Locale.getDefault()
@@ -604,6 +648,14 @@ private fun WorkSummary(
         String.format(locale, "%.1f", displayHours)
     }
     val todayHoursLabel = remember(locale, todayHours) { String.format(locale, "%.1f", todayHours) }
+    
+    // 计算截止今天的理论工时
+    val theoreticalHours = workdaysUpToToday * 7.5
+    val theoreticalHoursLabel = remember(locale, theoreticalHours) { String.format(locale, "%.1f", theoreticalHours) }
+    val difference = theoreticalHours - monthlyHours
+    val differenceLabel = remember(locale, difference) { String.format(locale, "%.1f", kotlin.math.abs(difference)) }
+    val isShortage = difference > 0 // 少打了
+    
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
@@ -618,11 +670,31 @@ private fun WorkSummary(
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium
             )
-            Text(
-                text = "本月已打卡：${monthlyHoursLabel}小时",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            
+            // 新格式：本月已打卡：X +/- Y = XX小时
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "本月已打卡：${workdaysUpToToday} X 7.5 ",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = if (isShortage) "- " else "+ ",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = differenceLabel,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (isShortage) MaterialTheme.colorScheme.error else Color(0xFF4CAF50)
+                )
+                Text(
+                    text = " = ${monthlyHoursLabel}小时",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            
             Text(
                 text = if (isOvertime) "本月已多打：${displayHoursLabel}小时" else "还需打卡：${displayHoursLabel}小时",
                 style = MaterialTheme.typography.bodyMedium,
@@ -649,7 +721,8 @@ private fun DayCell(
     onLongPress: () -> Unit,
     onDoubleClick: () -> Unit,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isSelected: Boolean = false
 ) {
     val textColor = when {
         !isCurrentMonth -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
@@ -669,7 +742,9 @@ private fun DayCell(
             onDoubleClick = { if (isCurrentMonth) onDoubleClick() }
         ),
         color = background,
-        tonalElevation = if (isToday) 4.dp else 0.dp
+        tonalElevation = if (isToday) 4.dp else 0.dp,
+        border = if (isSelected && !isToday) androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)) else null,
+        shape = RoundedCornerShape(4.dp)
     ) {
         Box(
             contentAlignment = Alignment.Center,
@@ -710,6 +785,21 @@ private fun countWorkdays(month: YearMonth, overrides: Map<LocalDate, Boolean>):
             overrides[date] ?: isDefaultWorkday(date)
         }
 }
+
+private fun countWorkdaysUpToDate(month: YearMonth, today: LocalDate, overrides: Map<LocalDate, Boolean>): Int {
+    val start = month.atDay(1)
+    val end = if (today.month == month.month && today.year == month.year) {
+        today
+    } else {
+        month.atEndOfMonth()
+    }
+    return generateSequence(start) { it.plusDays(1) }
+        .takeWhile { !it.isAfter(end) }
+        .count { date ->
+            overrides[date] ?: isDefaultWorkday(date)
+        }
+}
+
 
 private fun buildMonthGrid(month: YearMonth): List<List<LocalDate>> {
     val firstDay = month.atDay(1)
