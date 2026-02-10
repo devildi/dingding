@@ -520,13 +520,30 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         shape = RoundedCornerShape(12.dp),
                         singleLine = true
                     )
+                    val showTimePicker = {
+                        val initial = adjustTime
+                        TimePickerDialog(
+                            contextForPicker,
+                            { _, hour, minute ->
+                                adjustTime = LocalTime.of(hour, minute)
+                            },
+                            initial.hour,
+                            initial.minute,
+                            true
+                        ).show()
+                    }
+
                     Button(
                         onClick = {
                             val initial = adjustDate
                             DatePickerDialog(
                                 contextForPicker,
                                 { _, y, m, d ->
-                                    adjustDate = LocalDate.of(y, m + 1, d)
+                                    val newDate = LocalDate.of(y, m + 1, d)
+                                    adjustDate = newDate
+                                    if (newDate == today) {
+                                        showTimePicker()
+                                    }
                                 },
                                 initial.year,
                                 initial.monthValue - 1,
@@ -543,16 +560,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     if (adjustDate == today) {
                         Button(
                             onClick = {
-                                val initial = adjustTime
-                                TimePickerDialog(
-                                    contextForPicker,
-                                    { _, hour, minute ->
-                                        adjustTime = LocalTime.of(hour, minute)
-                                    },
-                                    initial.hour,
-                                    initial.minute,
-                                    true
-                                ).show()
+                                showTimePicker()
                             },
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier
