@@ -15,6 +15,7 @@ import android.widget.RemoteViews
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -207,17 +208,29 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     val workdaysUpToToday = countWorkdaysUpToDate(yearMonth, today, overrides.toMap())
                     val theoreticalHours = workdaysUpToToday * 7.5
                     val difference = theoreticalHours - monthHours
-                    
+
                     // 只有当差值 >= 0 时才显示建议下班时间
                     if (difference >= 0) {
                         val lastClockInTimestamp = sorted.last()
                         val suggestedClockOutMillis = lastClockInTimestamp + (difference * 3_600_000).toLong()
-                        val suggestedTime = LocalDateTime.ofInstant(
-                            Instant.ofEpochMilli(suggestedClockOutMillis),
-                            ZoneId.systemDefault()
-                        )
-                        val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", locale)
-                        displayLines.add("建议下班时间：${suggestedTime.format(timeFormatter)}")
+                        val suggestedClockOutDate = Instant.ofEpochMilli(suggestedClockOutMillis)
+                            .atZone(ZoneId.systemDefault())
+                            .toLocalDate()
+
+                        // 判断建议下班时间是否是今天
+                        if (suggestedClockOutDate == today) {
+                            // 建议下班时间是今天，显示具体时间
+                            val suggestedTime = LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(suggestedClockOutMillis),
+                                ZoneId.systemDefault()
+                            )
+                            val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", locale)
+                            displayLines.add("建议下班时间：${suggestedTime.format(timeFormatter)}")
+                        } else {
+                            // 建议下班时间不是今天，显示工时差提醒
+                            val differenceLabel = String.format(locale, "%.1f", difference)
+                            displayLines.add("还差${differenceLabel}小时,请注意打卡时间")
+                        }
                     }
                 }
                 
@@ -372,24 +385,90 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 ) {
                     punchDisplay?.let { text ->
                         val lines = text.split("\n")
-                        val annotatedString = androidx.compose.ui.text.buildAnnotatedString {
+                        val targetDate = selectedDate ?: today
+                        val filteredPunches = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }.sorted()
+
+                        Column(modifier = Modifier.fillMaxSize()) {
                             lines.forEachIndexed { index, line ->
-                                if (index > 0) append("\n")
-                                if (line.startsWith("建议下班时间：")) {
-                                    withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.error)) {
-                                        append(line)
+                                // 判断是否是打卡记录行（格式：1. 上班：HH:mm:ss 或 2. 下班：HH:mm:ss）
+                                val isPunchLine = line.matches(Regex("^\\d+\\. (上班|下班)：.*"))
+                                val punchIndex = if (isPunchLine) {
+                                    line.substringBefore(".").toIntOrNull()?.minus(1)
+                                } else null
+
+                                val annotatedString = androidx.compose.ui.text.buildAnnotatedString {
+                                    // 红色显示：建议下班时间 或 工时差提醒
+                                    if (line.startsWith("建议下班时间：") || line.contains("小时,请注意打卡时间")) {
+                                        withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.error)) {
+                                            append(line)
+                                        }
+                                    } else {
+                                        withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                                            append(line)
+                                        }
                                     }
+                                }
+
+                                val isClickable = isPunchLine && punchIndex != null && punchIndex < filteredPunches.size && targetDate == today
+
+                                if (isClickable) {
+                                    Text(
+                                        text = annotatedString,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.clickable {
+                                            val currentTimestamp = filteredPunches[punchIndex!!]
+                                            val currentDateTime = LocalDateTime.ofInstant(
+                                                Instant.ofEpochMilli(currentTimestamp),
+                                                ZoneId.systemDefault()
+                                            )
+                                            val currentTime = currentDateTime.toLocalTime()
+
+                                            fun showPicker(initialHour: Int, initialMinute: Int) {
+                                                TimePickerDialog(
+                                                    context,
+                                                    { _, hour, minute ->
+                                                        val newTime = LocalTime.of(hour, minute)
+                                                        val newDateTime = LocalDateTime.of(targetDate, newTime)
+                                                        val newTimestamp = newDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+                                                        val validationError = validatePunchTime(
+                                                            targetDate = targetDate,
+                                                            editingIndex = punchIndex!!,
+                                                            newTimestamp = newTimestamp,
+                                                            allPunches = filteredPunches,
+                                                            context = context
+                                                        )
+
+                                                        if (validationError != null) {
+                                                            Toast.makeText(context, validationError, Toast.LENGTH_SHORT).show()
+                                                            // 验证失败提示并重新弹出让用户重新选择
+                                                            showPicker(hour, minute)
+                                                        } else {
+                                                            val oldTimestamp = filteredPunches[punchIndex!!]
+                                                            val indexInPunches = punches.indexOf(oldTimestamp)
+                                                            if (indexInPunches != -1) {
+                                                                punches[indexInPunches] = newTimestamp
+                                                                scope.launch { savePunches(context, punches) }
+                                                            }
+                                                        }
+                                                    },
+                                                    initialHour,
+                                                    initialMinute,
+                                                    true
+                                                ).show()
+                                            }
+
+                                            showPicker(currentTime.hour, currentTime.minute)
+                                        }
+                                    )
                                 } else {
-                                    withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                                        append(line)
-                                    }
+                                    Text(
+                                        text = annotatedString,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
                                 }
                             }
                         }
-                        Text(
-                            text = annotatedString,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
                     }
                 }
             }
@@ -635,6 +714,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             }
         )
     }
+
 }
 
 @Composable
@@ -879,6 +959,15 @@ class PunchWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action == ACTION_PUNCH) {
+            val punches = loadPunches(context)
+            val lastPunch = punches.firstOrNull() ?: 0L
+            val now = System.currentTimeMillis()
+            if (now - lastPunch < 10_000L) {
+                val remain = 10 - (now - lastPunch) / 1000
+                Toast.makeText(context, "请等待 ${remain} 秒后再打卡", Toast.LENGTH_SHORT).show()
+                return
+            }
+
             addPunchTimestamp(context)
             Toast.makeText(context, "打卡成功", Toast.LENGTH_SHORT).show()
             val appWidgetManager = AppWidgetManager.getInstance(context)
@@ -891,7 +980,13 @@ class PunchWidgetProvider : AppWidgetProvider() {
     private fun createRemoteViews(context: Context): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_punch)
         val isClockInNext = loadPunches(context).size % 2 == 0
-        views.setTextViewText(R.id.widgetButton, if (isClockInNext) "上班打卡" else "下班打卡")
+        if (isClockInNext) {
+            views.setTextViewText(R.id.widgetButton, "上班打卡")
+            views.setInt(R.id.widgetButton, "setBackgroundResource", R.drawable.bg_widget_clock_in)
+        } else {
+            views.setTextViewText(R.id.widgetButton, "下班打卡")
+            views.setInt(R.id.widgetButton, "setBackgroundResource", R.drawable.bg_widget_clock_out)
+        }
         val intent = Intent(context, PunchWidgetProvider::class.java).apply {
             action = ACTION_PUNCH
         }
@@ -954,6 +1049,16 @@ private fun savePunches(context: Context, punches: List<Long>) {
         .edit()
         .putString(PREF_PUNCHES, serialized)
         .apply()
+
+    // 发送广播触发桌面 Widget 更新状态
+    val appWidgetManager = android.appwidget.AppWidgetManager.getInstance(context)
+    val component = android.content.ComponentName(context, PunchWidgetProvider::class.java)
+    val ids = appWidgetManager.getAppWidgetIds(component)
+    val updateIntent = android.content.Intent(context, PunchWidgetProvider::class.java).apply {
+        action = android.appwidget.AppWidgetManager.ACTION_APPWIDGET_UPDATE
+        putExtra(android.appwidget.AppWidgetManager.EXTRA_APPWIDGET_IDS, ids)
+    }
+    context.sendBroadcast(updateIntent)
 }
 
 private fun loadAdjustInfo(context: Context): AdjustInfo? {
@@ -1044,6 +1149,74 @@ private fun formatTimestamp(timestamp: Long, locale: Locale): String {
 
 private fun timestampToLocalDate(timestamp: Long): LocalDate {
     return Instant.ofEpochMilli(timestamp).atZone(ZoneId.systemDefault()).toLocalDate()
+}
+
+/**
+ * 验证打卡时间是否合理
+ * @param targetDate 目标日期
+ * @param editingIndex 正在编辑的打卡记录索引
+ * @param newTimestamp 新的时间戳
+ * @param allPunches 当天的所有打卡记录
+ * @param context 上下文
+ * @return 错误信息，如果时间合理则返回null
+ */
+private fun validatePunchTime(
+    targetDate: LocalDate,
+    editingIndex: Int,
+    newTimestamp: Long,
+    allPunches: List<Long>,
+    context: Context
+): String? {
+    // 1. 验证时间不能是未来时间
+    val now = System.currentTimeMillis()
+    if (newTimestamp > now) {
+        return "不能选择未来时间"
+    }
+
+    // 2. 创建临时列表来验证时间顺序
+    val tempList = allPunches.toMutableList()
+    tempList[editingIndex] = newTimestamp
+    val sorted = tempList.sorted()
+
+    // 3. 验证是否改变了原有的打卡先后顺序（防止时间错位导致身份互换）
+    if (sorted.indexOf(newTimestamp) != editingIndex) {
+        return if (editingIndex % 2 == 0) {
+            "修改后的上班时间不能晚于原本关联的下班时间"
+        } else {
+            "修改后的下班时间不能早于原本关联的上班时间"
+        }
+    }
+
+    // 4. 验证相邻打卡时间不能太近（至少间隔1分钟）
+    for (i in 0 until sorted.size - 1) {
+        val diff = sorted[i + 1] - sorted[i]
+        if (diff < 60_000) { // 少于1分钟
+            return "打卡时间间隔不能少于1分钟"
+        }
+    }
+
+    // 5. 验证单次工时不能超过12小时
+    for (i in sorted.indices step 2) {
+        if (i + 1 < sorted.size) {
+            val workMillis = sorted[i + 1] - sorted[i]
+            if (workMillis > 12 * 3_600_000L) {
+                return "单次工时不能超过12小时"
+            }
+        }
+    }
+
+    // 6. 验证每日总工时不能超过24小时
+    var totalMillis = 0L
+    for (i in sorted.indices step 2) {
+        if (i + 1 < sorted.size) {
+            totalMillis += (sorted[i + 1] - sorted[i])
+        }
+    }
+    if (totalMillis > 24 * 3_600_000L) {
+        return "每日总工时不能超过24小时"
+    }
+
+    return null // 时间合理，返回null
 }
 
 private data class AdjustInfo(
