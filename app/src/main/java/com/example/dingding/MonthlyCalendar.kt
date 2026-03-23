@@ -187,8 +187,26 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     val timeFormatter = remember(locale) { DateTimeFormatter.ofPattern("HH:mm", locale) }
     var lastPunchMillis by remember { mutableStateOf(0L) }
     var cooldownSeconds by remember { mutableStateOf(0) }
-    var cooldownJob by remember { mutableStateOf<Job?>(null) }
     var showResetAdjust by remember { mutableStateOf(false) }
+
+    val latestPunch = punches.firstOrNull() ?: 0L
+    LaunchedEffect(latestPunch) {
+        val nowSession = System.currentTimeMillis()
+        val diff = nowSession - latestPunch
+        if (latestPunch > 0 && diff < 10_000L) {
+            lastPunchMillis = latestPunch
+            var remain = 10 - (diff / 1000).toInt()
+            while (remain > 0) {
+                cooldownSeconds = remain
+                delay(1000)
+                remain -= 1
+            }
+            cooldownSeconds = 0
+        } else {
+            lastPunchMillis = latestPunch
+            cooldownSeconds = 0
+        }
+    }
     val punchDisplay by remember {
         derivedStateOf {
             val targetDate = selectedDate ?: today
@@ -497,16 +515,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     val now = System.currentTimeMillis()
                     punches.add(0, now)
                     lastPunchMillis = now
-                    cooldownJob?.cancel()
                     cooldownSeconds = 10
-                    cooldownJob = scope.launch {
-                        var remaining = 10
-                        while (remaining > 0) {
-                            delay(1000)
-                            remaining -= 1
-                            cooldownSeconds = remaining
-                        }
-                    }
                     scope.launch {
                         savePunches(context, punches)
                     }
@@ -997,6 +1006,18 @@ class PunchWidgetProvider : AppWidgetProvider() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         views.setOnClickPendingIntent(R.id.widgetButton, pendingIntent)
+
+        val appIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val appPendingIntent = PendingIntent.getActivity(
+            context,
+            1, // Request code 1 for launching app to differentiate from broadcast
+            appIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        views.setOnClickPendingIntent(R.id.widgetIcon, appPendingIntent)
+
         return views
     }
 
