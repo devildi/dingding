@@ -1061,6 +1061,63 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 strokeWidth = 2.dp.toPx(),
                                 cap = androidx.compose.ui.graphics.StrokeCap.Round
                             )
+
+                            // 3. 小表盘（小时），放在上方
+                            val hourRadius = radius * 0.35f
+                            val hourCenter = androidx.compose.ui.geometry.Offset(center.x, center.y - radius * 0.4f)
+
+                            drawCircle(
+                                color = onSurfaceColor.copy(alpha = 0.1f),
+                                radius = hourRadius,
+                                center = hourCenter,
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
+                            )
+
+                            // 小时刻度 (12 ticks)
+                            for (i in 0 until 12) {
+                                val angle = (i * 30 - 90) * (Math.PI / 180f)
+                                val isQuarter = i % 3 == 0
+                                val innerRadius = if (isQuarter) hourRadius - 8.dp.toPx() else hourRadius - 4.dp.toPx()
+                                val strokeWidth = if (isQuarter) 1.5f.dp.toPx() else 0.5f.dp.toPx()
+                                
+                                val start = androidx.compose.ui.geometry.Offset(
+                                    x = hourCenter.x + innerRadius * kotlin.math.cos(angle).toFloat(),
+                                    y = hourCenter.y + innerRadius * kotlin.math.sin(angle).toFloat()
+                                )
+                                val end = androidx.compose.ui.geometry.Offset(
+                                    x = hourCenter.x + hourRadius * kotlin.math.cos(angle).toFloat(),
+                                    y = hourCenter.y + hourRadius * kotlin.math.sin(angle).toFloat()
+                                )
+                                drawLine(
+                                    color = onSurfaceColor.copy(alpha = 0.5f),
+                                    start = start,
+                                    end = end,
+                                    strokeWidth = strokeWidth
+                                )
+
+                                // 刻度数字
+                                if (isQuarter) {
+                                    val text = if (i == 0) "12" else i.toString()
+                                    val textRadius = hourRadius - 9.dp.toPx()
+                                    val textX = hourCenter.x + textRadius * kotlin.math.cos(angle).toFloat()
+                                    val textY = hourCenter.y + textRadius * kotlin.math.sin(angle).toFloat() - (textPaintSmall.descent() + textPaintSmall.ascent()) / 2
+                                    drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaintSmall)
+                                }
+                            }
+
+                            // 时针
+                            val hourAngle = ((hours % 12 + minutes / 60f) * 30 - 90) * (Math.PI / 180f)
+                            val hourHandLength = hourRadius - 8.dp.toPx()
+                            drawLine(
+                                color = primaryColor,
+                                start = hourCenter,
+                                end = androidx.compose.ui.geometry.Offset(
+                                    x = hourCenter.x + hourHandLength * kotlin.math.cos(hourAngle).toFloat(),
+                                    y = hourCenter.y + hourHandLength * kotlin.math.sin(hourAngle).toFloat()
+                                ),
+                                strokeWidth = 2.5f.dp.toPx(),
+                                cap = androidx.compose.ui.graphics.StrokeCap.Round
+                            )
                             
                             // 绘制中心点
                             drawCircle(
@@ -1072,6 +1129,11 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 color = errorColor,
                                 radius = 2.dp.toPx(),
                                 center = smallCenter
+                            )
+                            drawCircle(
+                                color = primaryColor,
+                                radius = 2.dp.toPx(),
+                                center = hourCenter
                             )
                         }
                     }
