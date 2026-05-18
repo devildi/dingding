@@ -352,26 +352,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             ) {
                 Text(
                     text = "${yearMonth.month.getDisplayName(TextStyle.FULL, locale)} ${yearMonth.year}",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.combinedClickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {
-                                val remainingHoursForPrefill = totalWorkHours - monthHours
-                                val totalNeeded = todayHours + kotlin.math.max(0.0, remainingHoursForPrefill)
-                                val daysFromPlan = if (plannedDailyHours > 0) {
-                                    kotlin.math.ceil(totalNeeded / plannedDailyHours).toInt()
-                                } else {
-                                    0
-                                }
-                                dailyHoursInput = daysFromPlan.toString()
-                                plannedDailyHoursInput = String.format(locale, "%.1f", plannedDailyHours)
-                                showDailyHoursDialog = true
-                            },
-                            onLongClick = {
-                                showResetPlannedDialog = true
-                            }
-                        )
+                    style = MaterialTheme.typography.titleLarge
                 )
                 val adjustButtonInteraction = remember { MutableInteractionSource() }
                 val ripple = rememberRipple(bounded = true)
@@ -468,7 +449,27 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 dailyHours = dailyHours,
                 isTimerClickable = (selectedDate ?: today) == today && todayPunches.size % 2 != 0,
                 onClick = { showTodayTimerDialog = true },
-                onMonthlyStatsClick = { showMonthlyStatsDialog = true }
+                onMonthlyStatsClick = { showMonthlyStatsDialog = true },
+                onPlanClick = {
+                    val remainingHoursForPrefill = totalWorkHours - monthHours
+                    val includesToday = today in selectedCalendarDates
+                    val totalNeeded = if (includesToday) {
+                        todayHours + kotlin.math.max(0.0, remainingHoursForPrefill)
+                    } else {
+                        kotlin.math.max(0.0, remainingHoursForPrefill)
+                    }
+                    val daysFromPlan = if (plannedDailyHours > 0) {
+                        kotlin.math.ceil(totalNeeded / plannedDailyHours).toInt()
+                    } else {
+                        0
+                    }
+                    dailyHoursInput = daysFromPlan.toString()
+                    plannedDailyHoursInput = String.format(locale, "%.1f", plannedDailyHours)
+                    showDailyHoursDialog = true
+                },
+                onPlanLongClick = {
+                    showResetPlannedDialog = true
+                }
             )
             Surface(
                 modifier = Modifier
@@ -800,7 +801,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         val setDateStartMillis = plannedSetDate!!.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
                         if (info.endMillis > setDateStartMillis) {
                             val remainingHoursForPrefill = totalWorkHours - monthHours
-                            val totalNeeded = todayHours + kotlin.math.max(0.0, remainingHoursForPrefill)
+                            val includesToday = today in selectedCalendarDates
+                            val totalNeeded = if (includesToday) {
+                                todayHours + kotlin.math.max(0.0, remainingHoursForPrefill)
+                            } else {
+                                kotlin.math.max(0.0, remainingHoursForPrefill)
+                            }
                             val daysFromPlan = if (plannedDailyHours > 0) {
                                 kotlin.math.ceil(totalNeeded / plannedDailyHours).toInt()
                             } else {
@@ -1127,6 +1133,14 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     }
 
     if (showCalendarSelectDialog) {
+        val todayPunches = remember(punches) { punches.filter { timestampToLocalDate(it) == today } }
+        val isTodayPunchesOdd = remember(todayPunches) { todayPunches.size % 2 != 0 }
+        LaunchedEffect(isTodayPunchesOdd) {
+            if (isTodayPunchesOdd && today !in selectedCalendarDates) {
+                selectedCalendarDates.add(today)
+            }
+        }
+
         val calendarWeeks = buildMonthGrid(yearMonth)
         AlertDialog(
             onDismissRequest = { showCalendarSelectDialog = false },
@@ -1168,6 +1182,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                         .background(bgColor, RoundedCornerShape(4.dp))
                                         .then(if (!restricted) {
                                             Modifier.clickable {
+                                                if (date == today && isTodayPunchesOdd) {
+                                                    return@clickable
+                                                }
                                                 if (isSelected) {
                                                     selectedCalendarDates.remove(date)
                                                 } else {
@@ -1195,7 +1212,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     dailyHoursInput = days.toString()
                     if (days > 0) {
                         val remainingH = totalWorkHours - monthHours
-                        val raw = (todayHours + kotlin.math.max(0.0, remainingH)) / days
+                        val includesToday = today in selectedCalendarDates
+                        val raw = if (includesToday) {
+                            (todayHours + kotlin.math.max(0.0, remainingH)) / days
+                        } else {
+                            kotlin.math.max(0.0, remainingH) / days
+                        }
                         val ceiled = kotlin.math.ceil(raw * 10) / 10
                         plannedDailyHoursInput = String.format(locale, "%.1f", ceiled)
                     }
@@ -1244,7 +1266,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                             dailyHoursInput = input
                             val parsed = input.toDoubleOrNull()
                             if (parsed != null && parsed > 0) {
-                                val raw = (todayHours + kotlin.math.max(0.0, remainingHours)) / parsed
+                                val includesToday = today in selectedCalendarDates
+                                val raw = if (includesToday) {
+                                    (todayHours + kotlin.math.max(0.0, remainingHours)) / parsed
+                                } else {
+                                    kotlin.math.max(0.0, remainingHours) / parsed
+                                }
                                 val ceiled = kotlin.math.ceil(raw * 10) / 10
                                 plannedDailyHoursInput = String.format(locale, "%.1f", ceiled)
                             }
@@ -1254,7 +1281,10 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         placeholder = { Text("还需打卡的剩余天数") },
                         trailingIcon = {
                             IconButton(onClick = {
-                                if (selectedCalendarDates.isEmpty()) {
+                                val todayPunches = punches.filter { timestampToLocalDate(it) == today }
+                                val isTodayPunchesOdd = todayPunches.size % 2 != 0
+                                val wasEmpty = selectedCalendarDates.isEmpty()
+                                if (wasEmpty) {
                                     val targetDays = dailyHoursInput.toIntOrNull() ?: 0
                                     if (targetDays > 0) {
                                         var remaining = targetDays
@@ -1278,6 +1308,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                         }
                                     }
                                 }
+                                if (isTodayPunchesOdd && today !in selectedCalendarDates) {
+                                    selectedCalendarDates.add(today)
+                                }
                                 showCalendarSelectDialog = true
                             }) {
                                 Icon(Icons.Filled.DateRange, contentDescription = "选择日期")
@@ -1294,7 +1327,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                             plannedDailyHoursInput = input
                             val parsed = input.toDoubleOrNull()
                             if (parsed != null && parsed > 0) {
-                                val totalNeeded = todayHours + kotlin.math.max(0.0, remainingHours)
+                                val includesToday = today in selectedCalendarDates
+                                val totalNeeded = if (includesToday) {
+                                    todayHours + kotlin.math.max(0.0, remainingHours)
+                                } else {
+                                    kotlin.math.max(0.0, remainingHours)
+                                }
                                 val days = kotlin.math.ceil(totalNeeded / parsed).toInt()
                                 dailyHoursInput = days.toString()
                             }
@@ -1341,6 +1379,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
 
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun WorkSummary(
     workdays: Int,
@@ -1353,7 +1392,9 @@ private fun WorkSummary(
     modifier: Modifier = Modifier,
     isTimerClickable: Boolean = false,
     onClick: () -> Unit = {},
-    onMonthlyStatsClick: () -> Unit = {}
+    onMonthlyStatsClick: () -> Unit = {},
+    onPlanClick: () -> Unit = {},
+    onPlanLongClick: () -> Unit = {}
 ) {
     val locale = LocalContext.current.resources.configuration.locales[0] ?: Locale.getDefault()
     val totalHoursLabel = remember(locale, totalHours) { String.format(locale, "%.1f", totalHours) }
@@ -1419,7 +1460,13 @@ private fun WorkSummary(
             Text(
                 text = if (isOvertime) "本月已多打：${displayHoursLabel}小时" else "还需打卡：${displayHoursLabel}小时",
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.combinedClickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = rememberRipple(),
+                    onClick = onPlanClick,
+                    onLongClick = onPlanLongClick
+                )
             )
             Text(
                 text = "${targetDateLabel}：${targetDateHoursLabel}小时",
@@ -1839,7 +1886,13 @@ private fun MonthlyStatsDialog(
         val daysInMonth = (1..yearMonth.lengthOfMonth()).map { yearMonth.atDay(it) }
         daysInMonth.filter { date ->
             val isAdjusted = adjustedEndDate != null && (date < adjustedEndDate || date == adjustedEndDate)
-            date < today && !isAdjusted && (overrides[date] ?: isDefaultWorkday(date))
+            val isDateValid = if (date == today) {
+                val todayPunches = punches.filter { timestampToLocalDate(it) == today }
+                todayPunches.size % 2 == 0
+            } else {
+                date < today
+            }
+            isDateValid && !isAdjusted && (overrides[date] ?: isDefaultWorkday(date))
         }.map { date ->
             val dailyPunches = punches.filter { timestampToLocalDate(it) == date }.sorted()
             var dailyTotalMillis = 0L
