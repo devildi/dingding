@@ -37,6 +37,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.material.ripple.rememberRipple
@@ -46,8 +47,22 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.DateRange
@@ -72,6 +87,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -101,8 +118,8 @@ import androidx.compose.ui.graphics.nativeCanvas
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MonthlyCalendar(modifier: Modifier = Modifier) {
-    val today = remember { LocalDate.now() }
-    val yearMonth = remember { YearMonth.from(today) }
+    var today by remember { mutableStateOf(LocalDate.now()) }
+    var yearMonth by remember { mutableStateOf(YearMonth.from(today)) }
     val configuration = LocalConfiguration.current
     val isSquareishScreen = remember(configuration.screenWidthDp, configuration.screenHeightDp) {
         val height = configuration.screenHeightDp.takeIf { it > 0 } ?: 1
@@ -148,6 +165,11 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                val now = LocalDate.now()
+                if (today != now) {
+                    today = now
+                    yearMonth = YearMonth.from(now)
+                }
                 punches.clear()
                 punches.addAll(loadPunches(context))
             }
@@ -222,14 +244,25 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var deleteTargetTimestamp by remember { mutableStateOf(0L) }
     var showCalendarSelectDialog by remember { mutableStateOf(false) }
     var showMonthlyStatsDialog by remember { mutableStateOf(false) }
+    var showConfigDialog by remember { mutableStateOf(false) }
+    var punchMode by remember(context) { mutableStateOf(getPunchMode(context)) }
     var dailyHoursInput by remember { mutableStateOf("") }
     var plannedDailyHoursInput by remember { mutableStateOf("") }
-    val selectedCalendarDates = remember(context) {
+    val selectedCalendarDates = remember(context, today) {
         mutableStateListOf<LocalDate>().apply {
-            addAll(loadSelectedCalendarDates(context))
+            val saved = loadSelectedCalendarDates(context).filter { !it.isBefore(today) }
+            addAll(saved)
         }
     }
     var isSortDescending by remember { mutableStateOf(true) }
+    val hasTargetDatePunches by remember {
+        derivedStateOf {
+            val targetDate = selectedDate ?: today
+            punches.any { timestampToLocalDate(it) == targetDate }
+        }
+    }
+    val density = LocalDensity.current
+    var workSummaryHeightDp by remember { mutableStateOf(0.dp) }
 
     val latestPunch = punches.firstOrNull() ?: 0L
     LaunchedEffect(latestPunch) {
@@ -352,7 +385,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             ) {
                 Text(
                     text = "${yearMonth.month.getDisplayName(TextStyle.FULL, locale)} ${yearMonth.year}",
-                    style = MaterialTheme.typography.titleLarge
+                    style = MaterialTheme.typography.titleLarge,
+                    modifier = Modifier.pointerInput(Unit) {
+                        detectTapGestures(
+                            onLongPress = { showConfigDialog = true }
+                        )
+                    }
                 )
                 val adjustButtonInteraction = remember { MutableInteractionSource() }
                 val ripple = rememberRipple(bounded = true)
@@ -381,72 +419,81 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     )
                 }
             }
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
-                dayHeaders.forEach { day ->
-                    Text(
-                        modifier = Modifier.weight(1f),
-                        text = day.getDisplayName(TextStyle.SHORT, locale),
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-            weeks.forEach { week ->
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    week.forEach { date ->
-                        val effectiveWorkday = if (date.month == yearMonth.month) {
-                            overrides[date] ?: isDefaultWorkday(date)
-                        } else {
-                            false
-                        }
-                        val isRestDay = !effectiveWorkday
-                        val hasPunch = punches.any { ts -> timestampToLocalDate(ts) == date }
-                        DayCell(
-                            date = date,
-                            isCurrentMonth = date.month == yearMonth.month,
-                            isToday = date == today,
-                            isWorkday = effectiveWorkday,
-                            isRestDay = isRestDay,
-                            hasPunchOnRestDay = hasPunch && isRestDay,
-                            onLongPress = {
-                                if (date.month == yearMonth.month) {
-                                    dialogDate = date
-                                }
-                            },
-            onDoubleClick = {
-                if (date.month == yearMonth.month) {
-                    clearPunchDate = date
-                }
-            },
-            onClick = {
-                if (date.month == yearMonth.month) {
-                    selectedDate = date
-                }
-            },
-            modifier = Modifier
-                .weight(1f)
-                .aspectRatio(1f)
-                .padding(2.dp),
-                            isSelected = date == selectedDate
+                    dayHeaders.forEach { day ->
+                        Text(
+                            modifier = Modifier.weight(1f),
+                            text = day.getDisplayName(TextStyle.SHORT, locale),
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center
                         )
                     }
                 }
+                weeks.forEach { week ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        week.forEach { date ->
+                            val effectiveWorkday = if (date.month == yearMonth.month) {
+                                overrides[date] ?: isDefaultWorkday(date)
+                            } else {
+                                false
+                            }
+                            val isRestDay = !effectiveWorkday
+                            val hasPunch = punches.any { ts -> timestampToLocalDate(ts) == date }
+                            DayCell(
+                                date = date,
+                                isCurrentMonth = date.month == yearMonth.month,
+                                isToday = date == today,
+                                isWorkday = effectiveWorkday,
+                                isRestDay = isRestDay,
+                                hasPunchOnRestDay = hasPunch && isRestDay,
+                                onLongPress = {
+                                    if (date.month == yearMonth.month) {
+                                        dialogDate = date
+                                    }
+                                },
+                                onDoubleClick = {
+                                    if (date.month == yearMonth.month) {
+                                        clearPunchDate = date
+                                    }
+                                },
+                                onClick = {
+                                    if (date.month == yearMonth.month) {
+                                        selectedDate = date
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .aspectRatio(1f)
+                                    .padding(2.dp),
+                                isSelected = date == selectedDate
+                            )
+                        }
+                    }
+                }
             }
-            val todayPunches = remember(punches) { punches.filter { timestampToLocalDate(it) == today } }
+            val todayPunches by remember { derivedStateOf { punches.filter { timestampToLocalDate(it) == today } } }
             WorkSummary(
                 workdays = workdayCount,
                 totalHours = totalWorkHours,
                 monthlyHours = monthHours,
                 targetDateLabel = targetDateLabel,
                 targetDateHours = targetDateHours,
+                hasPunches = hasTargetDatePunches,
                 workdaysUpToToday = workdaysUpToToday,
                 dailyHours = dailyHours,
+                modifier = Modifier.onGloballyPositioned { coordinates ->
+                    workSummaryHeightDp = with(density) { coordinates.size.height.toDp() }
+                },
                 isTimerClickable = (selectedDate ?: today) == today && todayPunches.size % 2 != 0,
                 onClick = { showTodayTimerDialog = true },
                 onMonthlyStatsClick = { showMonthlyStatsDialog = true },
@@ -471,169 +518,218 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     showResetPlannedDialog = true
                 }
             )
-            Surface(
+            AnimatedVisibility(
+                visible = hasTargetDatePunches,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically(),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f, fill = true)
-                    .padding(bottom = gap),
-                shape = MaterialTheme.shapes.medium,
-                tonalElevation = 1.dp
+                    .padding(bottom = gap)
             ) {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    val scrollState = rememberScrollState()
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(12.dp)
-                            .verticalScroll(scrollState)
-                    ) {
-                    punchDisplay?.let { text ->
-                        val lines = text.split("\n")
-                        val targetDate = selectedDate ?: today
-                        val filteredPunches = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }.sorted()
+                Surface(
+                    modifier = if (workSummaryHeightDp > 0.dp) {
+                        Modifier.fillMaxWidth().height(workSummaryHeightDp)
+                    } else {
+                        Modifier.fillMaxWidth()
+                    },
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = 1.dp
+                ) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        punchDisplay?.let { text ->
+                            val lines = text.split("\n")
+                            val targetDate = selectedDate ?: today
+                            val filteredPunches = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }.sorted()
 
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            lines.forEachIndexed { index, line ->
-                                // 判断是否是打卡记录行（格式：1. 上班：HH:mm:ss 或 2. 下班：HH:mm:ss）
-                                val isPunchLine = line.matches(Regex("^\\d+\\. (上班|下班)：.*"))
-                                val punchIndex = if (isPunchLine) {
-                                    line.substringBefore(".").toIntOrNull()?.minus(1)
-                                } else null
-
-                                val annotatedString = androidx.compose.ui.text.buildAnnotatedString {
-                                    // 红色显示：建议下班时间 或 工时差提醒
-                                    if (line.startsWith("建议下班时间：") || line.contains("小时,请注意打卡时间")) {
-                                        withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.error)) {
-                                            append(line)
-                                        }
-                                    } else {
-                                        withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
-                                            append(line)
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(1.dp)
+                            ) {
+                                items(
+                                    items = lines.mapIndexed { idx, line -> line to idx },
+                                    key = { (line, idx) ->
+                                        val isPunchLine = line.matches(Regex("^\\d+\\. (上班|下班)：.*"))
+                                        val punchIndex = if (isPunchLine) {
+                                            line.substringBefore(".").toIntOrNull()?.minus(1)
+                                        } else null
+                                        if (punchIndex != null && punchIndex in filteredPunches.indices) {
+                                            filteredPunches[punchIndex]
+                                        } else {
+                                            line
                                         }
                                     }
-                                }
+                                ) { (line, idx) ->
+                                    var visibleState by remember(targetDate) { mutableStateOf(false) }
+                                    LaunchedEffect(targetDate) {
+                                        delay(idx * 40L)
+                                        visibleState = true
+                                    }
 
-                                val isClickable = isPunchLine && punchIndex != null && punchIndex < filteredPunches.size && targetDate == today
+                                    val itemAlpha by animateFloatAsState(
+                                        targetValue = if (visibleState) 1f else 0f,
+                                        animationSpec = tween(durationMillis = 250, easing = LinearOutSlowInEasing)
+                                    )
 
-                                if (isClickable) {
-                                    Text(
-                                        text = annotatedString,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        modifier = Modifier.combinedClickable(
-                                            onClick = {
-                                                val currentTimestamp = filteredPunches[punchIndex!!]
-                                                val currentDateTime = LocalDateTime.ofInstant(
-                                                    Instant.ofEpochMilli(currentTimestamp),
-                                                    ZoneId.systemDefault()
-                                                )
-                                                val currentTime = currentDateTime.toLocalTime()
+                                    val itemOffsetY by animateDpAsState(
+                                        targetValue = if (visibleState) 0.dp else 10.dp,
+                                        animationSpec = tween(durationMillis = 250, easing = LinearOutSlowInEasing)
+                                    )
 
-                                                fun showPicker(initialHour: Int, initialMinute: Int) {
-                                                    TimePickerDialog(
-                                                        context,
-                                                        { _, hour, minute ->
-                                                            val newTime = LocalTime.of(hour, minute)
-                                                            val newDateTime = LocalDateTime.of(targetDate, newTime)
-                                                            val newTimestamp = newDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                                    // 判断是否是打卡记录行（格式：1. 上班：HH:mm:ss 或 2. 下班：HH:mm:ss）
+                                    val isPunchLine = line.matches(Regex("^\\d+\\. (上班|下班)：.*"))
+                                    val punchIndex = if (isPunchLine) {
+                                        line.substringBefore(".").toIntOrNull()?.minus(1)
+                                    } else null
 
-                                                            val validationError = validatePunchTime(
-                                                                targetDate = targetDate,
-                                                                editingIndex = punchIndex!!,
-                                                                newTimestamp = newTimestamp,
-                                                                allPunches = filteredPunches,
-                                                                context = context
-                                                            )
-
-                                                            if (validationError != null) {
-                                                                Toast.makeText(context, validationError, Toast.LENGTH_SHORT).show()
-                                                                // 验证失败提示并重新弹出让用户重新选择
-                                                                showPicker(hour, minute)
-                                                            } else {
-                                                                val oldTimestamp = filteredPunches[punchIndex!!]
-                                                                val indexInPunches = punches.indexOf(oldTimestamp)
-                                                                if (indexInPunches != -1) {
-                                                                    punches[indexInPunches] = newTimestamp
-                                                                    scope.launch { savePunches(context, punches) }
-                                                                }
-                                                            }
-                                                        },
-                                                        initialHour,
-                                                        initialMinute,
-                                                        true
-                                                    ).show()
-                                                }
-
-                                                showPicker(currentTime.hour, currentTime.minute)
-                                            },
-                                            onLongClick = {
-                                                deleteTargetTimestamp = filteredPunches[punchIndex!!]
-                                                showDeletePunchDialog = true
+                                    val annotatedString = androidx.compose.ui.text.buildAnnotatedString {
+                                        // 红色显示：建议下班时间 或 工时差提醒
+                                        if (line.startsWith("建议下班时间：") || line.contains("小时,请注意打卡时间")) {
+                                            withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.error)) {
+                                                append(line)
                                             }
+                                        } else {
+                                            withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.onSurfaceVariant)) {
+                                                append(line)
+                                            }
+                                        }
+                                    }
+
+                                    val isClickable = isPunchLine && punchIndex != null && punchIndex < filteredPunches.size && targetDate == today
+
+                                    if (isClickable) {
+                                        Text(
+                                            text = annotatedString,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier
+                                                .animateItemPlacement()
+                                                .alpha(itemAlpha)
+                                                .offset(y = itemOffsetY)
+                                                .combinedClickable(
+                                                    onClick = {
+                                                        val currentTimestamp = filteredPunches[punchIndex!!]
+                                                        val currentDateTime = LocalDateTime.ofInstant(
+                                                            Instant.ofEpochMilli(currentTimestamp),
+                                                            ZoneId.systemDefault()
+                                                        )
+                                                        val currentTime = currentDateTime.toLocalTime()
+
+                                                        fun showPicker(initialHour: Int, initialMinute: Int) {
+                                                            TimePickerDialog(
+                                                                context,
+                                                                { _, hour, minute ->
+                                                                    val newTime = LocalTime.of(hour, minute)
+                                                                    val newDateTime = LocalDateTime.of(targetDate, newTime)
+                                                                    val newTimestamp = newDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+                                                                    val validationError = validatePunchTime(
+                                                                        targetDate = targetDate,
+                                                                        editingIndex = punchIndex!!,
+                                                                        newTimestamp = newTimestamp,
+                                                                        allPunches = filteredPunches,
+                                                                        context = context
+                                                                    )
+
+                                                                    if (validationError != null) {
+                                                                        Toast.makeText(context, validationError, Toast.LENGTH_SHORT).show()
+                                                                        // 验证失败提示并重新弹出让用户重新选择
+                                                                        showPicker(hour, minute)
+                                                                    } else {
+                                                                        val oldTimestamp = filteredPunches[punchIndex!!]
+                                                                        val indexInPunches = punches.indexOf(oldTimestamp)
+                                                                        if (indexInPunches != -1) {
+                                                                            punches[indexInPunches] = newTimestamp
+                                                                            scope.launch { savePunches(context, punches) }
+                                                                        }
+                                                                    }
+                                                                },
+                                                                initialHour,
+                                                                initialMinute,
+                                                                true
+                                                            ).show()
+                                                        }
+
+                                                        showPicker(currentTime.hour, currentTime.minute)
+                                                    },
+                                                    onLongClick = {
+                                                        deleteTargetTimestamp = filteredPunches[punchIndex!!]
+                                                        showDeletePunchDialog = true
+                                                    }
+                                                )
                                         )
-                                    )
-                                } else {
-                                    Text(
-                                        text = annotatedString,
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
+                                    } else {
+                                        Text(
+                                            text = annotatedString,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier
+                                                .animateItemPlacement()
+                                                .alpha(itemAlpha)
+                                                .offset(y = itemOffsetY)
+                                        )
+                                    }
                                 }
                             }
                         }
+                        if (punches.count { timestampToLocalDate(it) == (selectedDate ?: today) } > 1) {
+                            IconButton(
+                                onClick = { isSortDescending = !isSortDescending },
+                                modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)
+                            ) {
+                                val rotation by animateFloatAsState(targetValue = if (isSortDescending) 0f else 180f)
+                                Icon(
+                                    imageVector = Icons.Filled.KeyboardArrowDown,
+                                    contentDescription = "Sort records",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.rotate(rotation)
+                                )
+                            }
+                        }
                     }
-                }
-                if (punches.any { timestampToLocalDate(it) == (selectedDate ?: today) }) {
-                    IconButton(
-                        onClick = { isSortDescending = !isSortDescending },
-                        modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)
-                    ) {
-                        val rotation by animateFloatAsState(targetValue = if (isSortDescending) 0f else 180f)
-                        Icon(
-                            imageVector = Icons.Filled.KeyboardArrowDown,
-                            contentDescription = "Sort records",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.rotate(rotation)
-                        )
-                    }
-                }
             }
         }
     }
 
-    if (baseFabVisible) {
-            ExtendedFloatingActionButton(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp),
-                containerColor = if (fabEnabled) {
-                    if (isClockInNext) MaterialTheme.colorScheme.primary else Color.Black
-                } else {
-                    MaterialTheme.colorScheme.surfaceVariant
-                },
-                contentColor = if (fabEnabled) {
-                    if (isClockInNext) MaterialTheme.colorScheme.onPrimary else Color.White
-                } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                },
-                shape = RoundedCornerShape(20.dp),
-                onClick = {
-                    if (!fabEnabled) return@ExtendedFloatingActionButton
-                    val nowTs = System.currentTimeMillis()
-                    if (nowTs - lastPunchMillis < 10_000L) return@ExtendedFloatingActionButton
-                    val now = System.currentTimeMillis()
-                    punches.add(0, now)
-                    lastPunchMillis = now
-                    cooldownSeconds = 10
-                    scope.launch {
-                        savePunches(context, punches)
-                    }
+    AnimatedVisibility(
+        visible = baseFabVisible,
+        enter = fadeIn() + scaleIn(),
+        exit = fadeOut() + scaleOut(),
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(16.dp)
+    ) {
+        ExtendedFloatingActionButton(
+            modifier = Modifier,
+            containerColor = if (fabEnabled) {
+                if (isClockInNext) MaterialTheme.colorScheme.primary else Color.Black
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant
+            },
+            contentColor = if (fabEnabled) {
+                if (isClockInNext) MaterialTheme.colorScheme.onPrimary else Color.White
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            shape = RoundedCornerShape(20.dp),
+            onClick = {
+                if (!fabEnabled) return@ExtendedFloatingActionButton
+                val nowTs = System.currentTimeMillis()
+                if (nowTs - lastPunchMillis < 10_000L) return@ExtendedFloatingActionButton
+                val now = System.currentTimeMillis()
+                punches.add(0, now)
+                lastPunchMillis = now
+                cooldownSeconds = 10
+                scope.launch {
+                    savePunches(context, punches)
                 }
-            ) {
-                Text(
-                    text = if (cooldownSeconds > 0) "${fabLabel}(${cooldownSeconds}s)" else fabLabel,
-                    style = MaterialTheme.typography.titleMedium
-                )
             }
+        ) {
+            Text(
+                text = if (cooldownSeconds > 0) "${fabLabel}(${cooldownSeconds}s)" else fabLabel,
+                style = MaterialTheme.typography.titleMedium
+            )
         }
+    }
     }
 
     dialogDate?.let { target ->
@@ -878,7 +974,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
 
     if (showTodayTimerDialog) {
         var currentDurationMillis by remember { mutableStateOf(0L) }
-        val targetPunches = remember(punches) { punches.filter { timestampToLocalDate(it) == today }.sorted() }
+        val targetPunches by remember { derivedStateOf { punches.filter { timestampToLocalDate(it) == today }.sorted() } }
         
         LaunchedEffect(targetPunches) {
             while (true) {
@@ -1145,11 +1241,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     )
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showTodayTimerDialog = false }) {
-                    Text("关闭")
-                }
-            }
+            confirmButton = {}
         )
     }
 
@@ -1161,6 +1253,75 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             today = today,
             adjustInfo = adjustInfo,
             onDismissRequest = { showMonthlyStatsDialog = false }
+        )
+    }
+
+    if (showConfigDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfigDialog = false },
+            title = {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Text("配置", style = MaterialTheme.typography.titleMedium)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                if (punchMode == 0) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) 
+                                else Color.Transparent, 
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("标准", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                            Text("当前模式为标准模式", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = punchMode == 0,
+                            onCheckedChange = { checked ->
+                                val next = if (checked) 0 else 1
+                                punchMode = next
+                                savePunchMode(context, next)
+                            }
+                        )
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                if (punchMode == 1) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) 
+                                else Color.Transparent, 
+                                RoundedCornerShape(8.dp)
+                            )
+                            .padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("wifi模式", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                            Text("当前模式为wifi模式", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = punchMode == 1,
+                            onCheckedChange = { checked ->
+                                val next = if (checked) 1 else 0
+                                punchMode = next
+                                savePunchMode(context, next)
+                            }
+                        )
+                    }
+                }
+            },
+            confirmButton = {}
         )
     }
 
@@ -1195,9 +1356,10 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     }
 
     if (showCalendarSelectDialog) {
-        val todayPunches = remember(punches) { punches.filter { timestampToLocalDate(it) == today } }
-        val isTodayPunchesOdd = remember(todayPunches) { todayPunches.size % 2 != 0 }
+        val todayPunches by remember { derivedStateOf { punches.filter { timestampToLocalDate(it) == today } } }
+        val isTodayPunchesOdd by remember { derivedStateOf { todayPunches.size % 2 != 0 } }
         LaunchedEffect(isTodayPunchesOdd) {
+            selectedCalendarDates.removeAll { it.isBefore(today) }
             if (isTodayPunchesOdd && today !in selectedCalendarDates) {
                 selectedCalendarDates.add(today)
             }
@@ -1449,6 +1611,7 @@ private fun WorkSummary(
     monthlyHours: Double,
     targetDateLabel: String,
     targetDateHours: Double,
+    hasPunches: Boolean,
     workdaysUpToToday: Int,
     dailyHours: Double,
     modifier: Modifier = Modifier,
@@ -1531,7 +1694,11 @@ private fun WorkSummary(
                 )
             )
             Text(
-                text = "${targetDateLabel}：${targetDateHoursLabel}小时",
+                text = if (hasPunches) {
+                    "${targetDateLabel}：${targetDateHoursLabel}小时"
+                } else {
+                    targetDateLabel.replace("已打卡", "无打卡记录")
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = if (isTimerClickable) Modifier.clickable { onClick() } else Modifier
@@ -1973,6 +2140,12 @@ private fun MonthlyStatsDialog(
         val maxInStats = stats.maxOfOrNull { it.second } ?: 0.0
         maxOf(8.0, maxInStats)
     }
+    
+    var isAnimateStarted by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        delay(50L)
+        isAnimateStarted = true
+    }
 
     AlertDialog(
         onDismissRequest = onDismissRequest,
@@ -1987,7 +2160,24 @@ private fun MonthlyStatsDialog(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(stats) { (date, hours) ->
+                    itemsIndexed(stats) { index, (date, hours) ->
+                        val targetFraction = (hours / maxHours).toFloat().coerceIn(0f, 1f)
+                        var itemAnimateStarted by remember { mutableStateOf(false) }
+                        LaunchedEffect(isAnimateStarted) {
+                            if (isAnimateStarted) {
+                                delay(index * 30L)
+                                itemAnimateStarted = true
+                            }
+                        }
+
+                        val animatedFraction by animateFloatAsState(
+                            targetValue = if (itemAnimateStarted) targetFraction else 0f,
+                            animationSpec = tween(
+                                durationMillis = 600,
+                                easing = FastOutSlowInEasing
+                            )
+                        )
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
@@ -2010,7 +2200,7 @@ private fun MonthlyStatsDialog(
                                 )
                                 Box(
                                     modifier = Modifier
-                                        .fillMaxWidth((hours / maxHours).toFloat().coerceIn(0f, 1f))
+                                        .fillMaxWidth(animatedFraction)
                                         .height(16.dp)
                                         .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
                                 )
@@ -2055,13 +2245,7 @@ private fun MonthlyStatsDialog(
                 }
             }
         },
-        confirmButton = {
-            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                TextButton(onClick = onDismissRequest) {
-                    Text("关闭")
-                }
-            }
-        }
+        confirmButton = {}
     )
 }
 
@@ -2191,3 +2375,15 @@ private data class AdjustInfo(
 private const val PREF_ADJUST_MONTH = "adjust_month"
 private const val PREF_ADJUST_HOURS = "adjust_hours"
 private const val PREF_ADJUST_END = "adjust_end"
+
+private const val PREF_PUNCH_MODE = "punch_mode"
+
+private fun getPunchMode(context: Context): Int {
+    val prefs = context.getSharedPreferences("dingding_prefs", Context.MODE_PRIVATE)
+    return prefs.getInt(PREF_PUNCH_MODE, 0)
+}
+
+private fun savePunchMode(context: Context, mode: Int) {
+    val prefs = context.getSharedPreferences("dingding_prefs", Context.MODE_PRIVATE)
+    prefs.edit().putInt(PREF_PUNCH_MODE, mode).apply()
+}
