@@ -19,6 +19,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -61,6 +62,8 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
@@ -167,8 +170,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             if (event == Lifecycle.Event.ON_RESUME) {
                 val now = LocalDate.now()
                 if (today != now) {
+                    val oldToday = today
                     today = now
                     yearMonth = YearMonth.from(now)
+                    if (selectedDate == oldToday) {
+                        selectedDate = now
+                    }
                 }
                 punches.clear()
                 punches.addAll(loadPunches(context))
@@ -263,6 +270,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     }
     val density = LocalDensity.current
     var workSummaryHeightDp by remember { mutableStateOf(0.dp) }
+    var swipeOffsetX by remember { mutableStateOf(0f) }
 
     val latestPunch = punches.firstOrNull() ?: 0L
     LaunchedEffect(latestPunch) {
@@ -375,7 +383,37 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = 16.dp, vertical = 16.dp)
-                .padding(bottom = fabHeight + fabPadding + gap),
+                .padding(bottom = fabHeight + fabPadding + gap)
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = {
+                            val threshold = 100f
+                            if (swipeOffsetX < -threshold) {
+                                // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
+                                val currentSelected = selectedDate ?: today
+                                val targetDate = currentSelected.minusDays(1)
+                                if (YearMonth.from(targetDate) == yearMonth) {
+                                    selectedDate = targetDate
+                                }
+                            } else if (swipeOffsetX > threshold) {
+                                // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
+                                val currentSelected = selectedDate ?: today
+                                val targetDate = currentSelected.plusDays(1)
+                                if (YearMonth.from(targetDate) == yearMonth) {
+                                    selectedDate = targetDate
+                                }
+                            }
+                            swipeOffsetX = 0f
+                        },
+                        onDragCancel = {
+                            swipeOffsetX = 0f
+                        },
+                        onHorizontalDrag = { change, dragAmount ->
+                            change.consume()
+                            swipeOffsetX += dragAmount
+                        }
+                    )
+                },
             verticalArrangement = Arrangement.spacedBy(gap)
         ) {
             Row(
@@ -527,10 +565,39 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     .padding(bottom = gap)
             ) {
                 Surface(
-                    modifier = if (workSummaryHeightDp > 0.dp) {
+                    modifier = (if (workSummaryHeightDp > 0.dp) {
                         Modifier.fillMaxWidth().height(workSummaryHeightDp)
                     } else {
                         Modifier.fillMaxWidth()
+                    }).pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                val threshold = 100f
+                                if (swipeOffsetX < -threshold) {
+                                    // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
+                                    val currentSelected = selectedDate ?: today
+                                    val targetDate = currentSelected.minusDays(1)
+                                    if (YearMonth.from(targetDate) == yearMonth) {
+                                        selectedDate = targetDate
+                                    }
+                                } else if (swipeOffsetX > threshold) {
+                                    // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
+                                    val currentSelected = selectedDate ?: today
+                                    val targetDate = currentSelected.plusDays(1)
+                                    if (YearMonth.from(targetDate) == yearMonth) {
+                                        selectedDate = targetDate
+                                    }
+                                }
+                                swipeOffsetX = 0f
+                            },
+                            onDragCancel = {
+                                swipeOffsetX = 0f
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                swipeOffsetX += dragAmount
+                            }
+                        )
                     },
                     shape = MaterialTheme.shapes.medium,
                     tonalElevation = 1.dp
@@ -633,7 +700,6 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
 
                                                                     if (validationError != null) {
                                                                         Toast.makeText(context, validationError, Toast.LENGTH_SHORT).show()
-                                                                        // 验证失败提示并重新弹出让用户重新选择
                                                                         showPicker(hour, minute)
                                                                     } else {
                                                                         val oldTimestamp = filteredPunches[punchIndex!!]
@@ -994,18 +1060,20 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         val minutes = (totalSeconds / 60) % 60
         val hours = totalSeconds / 3600
 
+        val latestTodayPunch = targetPunches.lastOrNull() ?: 0L
+        val realtimeRemainingMillis = maxOf(0L, ((totalWorkHours - monthHours) * 3_600_000).toLong() - (System.currentTimeMillis() - latestTodayPunch))
+        val remainingSeconds = realtimeRemainingMillis / 1000
+        val remainingSec = remainingSeconds % 60
+        val remainingMin = (remainingSeconds / 60) % 60
+        val remainingHr = remainingSeconds / 3600
+
         AlertDialog(
             onDismissRequest = { showTodayTimerDialog = false },
-            title = {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("今日已打卡：", style = MaterialTheme.typography.titleMedium)
-                }
-            },
             text = {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Box(
                         modifier = Modifier
@@ -1235,10 +1303,18 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     }
                     
                     Text(
-                        text = String.format(locale, "%02d:%02d:%02d", hours, minutes, seconds),
+                        text = "已打卡: " + String.format(locale, "%02d:%02d:%02d", hours, minutes, seconds),
                         style = MaterialTheme.typography.headlineMedium,
                         textAlign = TextAlign.Center
                     )
+                    if (realtimeRemainingMillis > 0) {
+                        Text(
+                            text = "本月还需打卡: " + String.format(locale, "%02d:%02d:%02d", remainingHr, remainingMin, remainingSec),
+                            style = MaterialTheme.typography.bodyLarge,
+                            textAlign = TextAlign.Center,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             },
             confirmButton = {}
@@ -1733,15 +1809,36 @@ private fun DayCell(
         Color.Transparent
     }
 
+    val animatedAlpha by animateFloatAsState(
+        targetValue = if (isSelected) 0.6f else 0f,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "selectedAlpha"
+    )
+    val animatedBorderWidth by animateDpAsState(
+        targetValue = if (isSelected) 3.dp else 0.dp,
+        animationSpec = tween(durationMillis = 250, easing = FastOutSlowInEasing),
+        label = "selectedBorderWidth"
+    )
+
+    val borderStroke = if (animatedBorderWidth > 0.1.dp && !isToday) {
+        androidx.compose.foundation.BorderStroke(
+            width = animatedBorderWidth,
+            color = MaterialTheme.colorScheme.error.copy(alpha = animatedAlpha)
+        )
+    } else {
+        null
+    }
+
     Surface(
-        modifier = modifier.combinedClickable(
-            onLongClick = { if (isCurrentMonth) onLongPress() },
-            onClick = { if (isCurrentMonth) onClick() },
-            onDoubleClick = { if (isCurrentMonth) onDoubleClick() }
-        ),
+        modifier = modifier
+            .combinedClickable(
+                onLongClick = { if (isCurrentMonth) onLongPress() },
+                onClick = { if (isCurrentMonth) onClick() },
+                onDoubleClick = { if (isCurrentMonth) onDoubleClick() }
+            ),
         color = background,
         tonalElevation = if (isToday) 4.dp else 0.dp,
-        border = if (isSelected && !isToday) androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)) else null,
+        border = borderStroke,
         shape = RoundedCornerShape(4.dp)
     ) {
         Box(
@@ -2117,7 +2214,7 @@ private fun MonthlyStatsDialog(
             val isAdjusted = adjustedEndDate != null && (date < adjustedEndDate || date == adjustedEndDate)
             val isDateValid = if (date == today) {
                 val todayPunches = punches.filter { timestampToLocalDate(it) == today }
-                todayPunches.size % 2 == 0
+                todayPunches.isNotEmpty() && todayPunches.size % 2 == 0
             } else {
                 date < today
             }
