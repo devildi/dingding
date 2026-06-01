@@ -171,10 +171,20 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 val now = LocalDate.now()
                 if (today != now) {
                     val oldToday = today
+                    val monthChanged = today.month != now.month
                     today = now
                     yearMonth = YearMonth.from(now)
                     if (selectedDate == oldToday) {
                         selectedDate = now
+                    }
+                    if (monthChanged) {
+                        plannedDailyHours = DEFAULT_PLANNED_DAILY_HOURS
+                        savePlannedDailyHours(context, DEFAULT_PLANNED_DAILY_HOURS)
+                        plannedSetDate = null
+                        context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+                            .edit()
+                            .remove(PREF_PLANNED_SET_DATE)
+                            .apply()
                     }
                 }
                 punches.clear()
@@ -292,6 +302,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     }
     val punchDisplay by remember {
         derivedStateOf {
+            val currentPlannedDailyHours = plannedDailyHours
+            val currentPlannedSetDate = plannedSetDate
+
             val targetDate = selectedDate ?: today
             val filtered = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }
             val sorted = filtered.sorted()
@@ -308,14 +321,14 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
 
                 // 如果是今天且打卡记录是奇数条（有上班卡但没下班卡）
                 if (targetDate == today && sorted.size % 2 == 1) {
-                    val difference = if (plannedSetDate != null) {
+                    val difference = if (currentPlannedSetDate != null) {
                         // 从设定计划的那天起，过去数据不参与计算
-                        val effectiveSetDate = maxOf(plannedSetDate!!, yearMonth.atDay(1))
+                        val effectiveSetDate = maxOf(currentPlannedSetDate!!, yearMonth.atDay(1))
                         val overridesMap = overrides.toMap()
                         val workdaysUpToToday = countWorkdaysUpToDate(yearMonth, today, overridesMap)
                         val workdaysBeforeSet = countWorkdaysUpToDate(yearMonth, effectiveSetDate.minusDays(1), overridesMap)
                         val workdaysFromSet = workdaysUpToToday - workdaysBeforeSet
-                        val theoreticalHours = workdaysFromSet * plannedDailyHours
+                        val theoreticalHours = workdaysFromSet * currentPlannedDailyHours
                         val zone = ZoneId.systemDefault()
                         val startMillis = effectiveSetDate.atStartOfDay(zone).toInstant().toEpochMilli()
                         val endMillis = today.atStartOfDay(zone).toInstant().toEpochMilli()
@@ -1731,10 +1744,12 @@ private fun WorkSummary(
                 fontWeight = FontWeight.Medium
             )
             
+            val isMonthlyClickable = monthlyHours > 0.0
+
             // 新格式：本月已打卡：X +/- Y = XX小时
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.clickable { onMonthlyStatsClick() }
+                modifier = if (isMonthlyClickable) Modifier.clickable { onMonthlyStatsClick() } else Modifier
             ) {
                 Text(
                     text = "本月已打卡：${workdaysUpToToday} X ${dailyHoursLabel} ",
@@ -1883,10 +1898,10 @@ private fun countWorkdays(month: YearMonth, overrides: Map<LocalDate, Boolean>):
 
 private fun countWorkdaysUpToDate(month: YearMonth, today: LocalDate, overrides: Map<LocalDate, Boolean>): Int {
     val start = month.atDay(1)
-    val end = if (today.month == month.month && today.year == month.year) {
-        today
-    } else {
-        month.atEndOfMonth()
+    val end = when {
+        today.isBefore(start) -> return 0
+        today.month == month.month && today.year == month.year -> today
+        else -> month.atEndOfMonth()
     }
     return generateSequence(start) { it.plusDays(1) }
         .takeWhile { !it.isAfter(end) }
@@ -2230,7 +2245,7 @@ private fun MonthlyStatsDialog(
                 }
             }
             date to dailyTotalMillis / (1000.0 * 3600.0)
-        }.reversed()
+        }.filter { it.second > 0.0 }.reversed()
     }
 
     val maxHours = remember(stats) {
