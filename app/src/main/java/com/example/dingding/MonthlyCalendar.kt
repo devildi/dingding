@@ -357,8 +357,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 ZoneId.systemDefault()
                             )
                             val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", locale)
-                            val differenceLabel = String.format(locale, "%.1f", difference)
-                            displayLines.add(0, "建议下班：${suggestedTime.format(timeFormatter)}（${differenceLabel}小时）")
+                            val plannedHours = difference + todayHours
+                            val plannedHoursLabel = String.format(locale, "%.1f", plannedHours)
+                            displayLines.add(0, "建议下班：${suggestedTime.format(timeFormatter)}（${plannedHoursLabel}小时）")
                         } else {
                             // 建议下班时间不是今天，显示工时差提醒
                             val differenceLabel = String.format(locale, "%.1f", difference)
