@@ -336,6 +336,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         theoreticalHours - (actualFromSet + todayHours)
                     } else {
                         // 默认 7.5：全部工作日 × 7.5 − 本月已打卡
+                        // monthHours 通过 calculateWorkedMillis 统计已成对的打卡，todayHours 已含在内
                         val workdaysUpToToday = countWorkdaysUpToDate(yearMonth, today, overrides.toMap())
                         workdaysUpToToday * DEFAULT_DAILY_HOURS - monthHours
                     }
@@ -356,7 +357,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 ZoneId.systemDefault()
                             )
                             val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", locale)
-                            displayLines.add(0, "建议下班时间：${suggestedTime.format(timeFormatter)}")
+                            val differenceLabel = String.format(locale, "%.1f", difference)
+                            displayLines.add(0, "建议下班：${suggestedTime.format(timeFormatter)}（${differenceLabel}小时）")
                         } else {
                             // 建议下班时间不是今天，显示工时差提醒
                             val differenceLabel = String.format(locale, "%.1f", difference)
@@ -665,7 +667,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
 
                                     val annotatedString = androidx.compose.ui.text.buildAnnotatedString {
                                         // 红色显示：建议下班时间 或 工时差提醒
-                                        if (line.startsWith("建议下班时间：") || line.contains("小时,请注意打卡时间")) {
+                                        if (line.startsWith("建议下班：") || line.contains("小时,请注意打卡时间")) {
                                             withStyle(style = androidx.compose.ui.text.SpanStyle(color = MaterialTheme.colorScheme.error)) {
                                                 append(line)
                                             }
@@ -2233,8 +2235,9 @@ private fun MonthlyStatsDialog(
             } else {
                 date < today
             }
-            isDateValid && !isAdjusted && (overrides[date] ?: isDefaultWorkday(date))
+            isDateValid && !isAdjusted
         }.map { date ->
+            val isWorkday = overrides[date] ?: isDefaultWorkday(date)
             val dailyPunches = punches.filter { timestampToLocalDate(it) == date }.sorted()
             var dailyTotalMillis = 0L
             for (i in 0 until dailyPunches.size step 2) {
@@ -2244,7 +2247,7 @@ private fun MonthlyStatsDialog(
                     dailyTotalMillis += (end - start)
                 }
             }
-            date to dailyTotalMillis / (1000.0 * 3600.0)
+            Triple(date, dailyTotalMillis / (1000.0 * 3600.0), isWorkday)
         }.filter { it.second > 0.0 }.reversed()
     }
 
@@ -2272,7 +2275,7 @@ private fun MonthlyStatsDialog(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    itemsIndexed(stats) { index, (date, hours) ->
+                    itemsIndexed(stats) { index, (date, hours, isWorkday) ->
                         val targetFraction = (hours / maxHours).toFloat().coerceIn(0f, 1f)
                         var itemAnimateStarted by remember { mutableStateOf(false) }
                         LaunchedEffect(isAnimateStarted) {
@@ -2290,6 +2293,9 @@ private fun MonthlyStatsDialog(
                             )
                         )
 
+                        val barColor = if (isWorkday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary
+                        val dateColor = if (isWorkday) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.tertiary
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
@@ -2297,6 +2303,7 @@ private fun MonthlyStatsDialog(
                             Text(
                                 text = "${date.monthValue}/${date.dayOfMonth}",
                                 style = MaterialTheme.typography.bodySmall,
+                                color = dateColor,
                                 modifier = Modifier.width(45.dp)
                             )
                             Box(
@@ -2314,13 +2321,14 @@ private fun MonthlyStatsDialog(
                                     modifier = Modifier
                                         .fillMaxWidth(animatedFraction)
                                         .height(16.dp)
-                                        .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
+                                        .background(barColor, RoundedCornerShape(4.dp))
                                 )
                             }
                             Text(
                                 text = String.format(locale, "%.1fh", hours),
                                 style = MaterialTheme.typography.bodySmall,
                                 fontWeight = FontWeight.Bold,
+                                color = dateColor,
                                 modifier = Modifier.width(45.dp),
                                 textAlign = TextAlign.End
                             )
