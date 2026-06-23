@@ -357,7 +357,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 ZoneId.systemDefault()
                             )
                             val timeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss", locale)
-                            val plannedHours = difference + todayHours
+                            val plannedHours = if (currentPlannedSetDate != null) currentPlannedDailyHours else DEFAULT_DAILY_HOURS
                             val plannedHoursLabel = String.format(locale, "%.1f", plannedHours)
                             displayLines.add(0, "建议下班：${suggestedTime.format(timeFormatter)}（${plannedHoursLabel}小时）")
                         } else {
@@ -1670,12 +1670,16 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         if (plannedValue == null || plannedValue <= 0 || plannedValue >= 24) {
                             return@TextButton
                         }
-                        if (plannedValue != plannedDailyHours) {
+                        val targetSetDate = selectedCalendarDates.minOrNull() ?: today
+                        if (plannedValue != plannedDailyHours || plannedSetDate != targetSetDate) {
                             plannedDailyHours = plannedValue
                             savePlannedDailyHours(context, plannedValue)
                             if (plannedValue != DEFAULT_PLANNED_DAILY_HOURS) {
-                                plannedSetDate = today
-                                savePlannedSetDate(context, today)
+                                plannedSetDate = targetSetDate
+                                savePlannedSetDate(context, targetSetDate)
+                            } else {
+                                plannedSetDate = null
+                                clearPlannedSetDate(context)
                             }
                         }
                         showDailyHoursDialog = false
