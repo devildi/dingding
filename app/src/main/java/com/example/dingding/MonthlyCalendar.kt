@@ -1674,13 +1674,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         if (plannedValue != plannedDailyHours || plannedSetDate != targetSetDate) {
                             plannedDailyHours = plannedValue
                             savePlannedDailyHours(context, plannedValue)
-                            if (plannedValue != DEFAULT_PLANNED_DAILY_HOURS) {
-                                plannedSetDate = targetSetDate
-                                savePlannedSetDate(context, targetSetDate)
-                            } else {
-                                plannedSetDate = null
-                                clearPlannedSetDate(context)
-                            }
+                            plannedSetDate = targetSetDate
+                            savePlannedSetDate(context, targetSetDate)
                         }
                         showDailyHoursDialog = false
                     },
