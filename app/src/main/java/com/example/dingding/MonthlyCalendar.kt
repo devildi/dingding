@@ -898,7 +898,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         TimePickerDialog(
                             contextForPicker,
                             { _, hour, minute ->
-                                adjustTime = LocalTime.of(hour, minute)
+                                val selectedTime = LocalTime.of(hour, minute)
+                                val nowTime = LocalTime.now()
+                                adjustTime = if (selectedTime.isAfter(nowTime)) {
+                                    nowTime
+                                } else {
+                                    selectedTime
+                                }
                             },
                             initial.hour,
                             initial.minute,
@@ -921,7 +927,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 initial.year,
                                 initial.monthValue - 1,
                                 initial.dayOfMonth
-                            ).show()
+                            ).apply {
+                                datePicker.maxDate = System.currentTimeMillis()
+                            }.show()
                         },
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -952,13 +960,23 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         Toast.makeText(contextForPicker, "请输入精确工时", Toast.LENGTH_SHORT).show()
                         return@TextButton
                     }
-                    val endDateTime = if (adjustDate == today) {
-                        LocalDateTime.of(adjustDate, adjustTime)
+                    var finalDate = adjustDate
+                    var finalTime = adjustTime
+                    var endDateTime = if (finalDate == today) {
+                        LocalDateTime.of(finalDate, finalTime)
                     } else {
                         // 非当天选择时，覆盖到该日 23:59:59.999999999
-                        adjustDate.plusDays(1).atStartOfDay().minusNanos(1)
+                        finalDate.plusDays(1).atStartOfDay().minusNanos(1)
                     }
-                    if (YearMonth.from(adjustDate) != yearMonth) {
+                    val nowDateTime = LocalDateTime.now()
+                    if (endDateTime.isAfter(nowDateTime)) {
+                        finalDate = LocalDate.now()
+                        finalTime = LocalTime.now()
+                        adjustDate = finalDate
+                        adjustTime = finalTime
+                        endDateTime = nowDateTime
+                    }
+                    if (YearMonth.from(finalDate) != yearMonth) {
                         Toast.makeText(contextForPicker, "请选择当前月份的日期", Toast.LENGTH_SHORT).show()
                         return@TextButton
                     }
