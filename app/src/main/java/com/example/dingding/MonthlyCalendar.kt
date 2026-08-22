@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -68,6 +69,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.draw.alpha
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -160,6 +163,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var clearPunchDate by remember { mutableStateOf<LocalDate?>(null) }
     var selectedDate by remember { mutableStateOf<LocalDate?>(null) }
     var showAdjustDialog by remember { mutableStateOf(false) }
+    var showMonthPickerDialog by remember { mutableStateOf(false) }
     var adjustInfo by remember(context) { mutableStateOf(loadAdjustInfo(context)) }
     var adjustFormula by remember { mutableStateOf("") }
     var adjustDate by remember { mutableStateOf(LocalDate.now().minusDays(1)) }
@@ -215,15 +219,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             context.unregisterReceiver(receiver)
         }
     }
-    LaunchedEffect(Unit) {
-        purgePreviousMonthData(
-            today = LocalDate.now(),
-            punches = punches,
-            adjustInfo = { adjustInfo },
-            setAdjustInfo = { adjustInfo = it },
-            context = context
-        )
-    }
+
     val workdayCount by remember {
         derivedStateOf { countWorkdays(yearMonth, overrides) }
     }
@@ -437,15 +433,28 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = "${yearMonth.month.getDisplayName(TextStyle.FULL, locale)} ${yearMonth.year}",
-                    style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.pointerInput(Unit) {
-                        detectTapGestures(
-                            onLongPress = { showConfigDialog = true }
-                        )
-                    }
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.clickable { showMonthPickerDialog = true }
+                ) {
+                    Text(
+                        text = "${yearMonth.month.getDisplayName(TextStyle.FULL, locale)} ${yearMonth.year}",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier.pointerInput(Unit) {
+                            detectTapGestures(
+                                onTap = { showMonthPickerDialog = true },
+                                onLongPress = { showConfigDialog = true }
+                            )
+                        }
+                    )
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "选择月份",
+                        modifier = Modifier
+                            .padding(start = 4.dp)
+                            .size(24.dp)
+                    )
+                }
                 val adjustButtonInteraction = remember { MutableInteractionSource() }
                 val ripple = rememberRipple(bounded = true)
                 Surface(
@@ -536,6 +545,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 }
             }
             val todayPunches by remember { derivedStateOf { punches.filter { timestampToLocalDate(it) == today } } }
+            val currentMonthLabel = if (yearMonth == YearMonth.from(today)) "本月" else "${yearMonth.monthValue}月"
             WorkSummary(
                 workdays = workdayCount,
                 totalHours = totalWorkHours,
@@ -545,6 +555,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 hasPunches = hasTargetDatePunches,
                 workdaysUpToToday = workdaysUpToToday,
                 dailyHours = dailyHours,
+                monthLabel = currentMonthLabel,
                 modifier = Modifier.onGloballyPositioned { coordinates ->
                     workSummaryHeightDp = with(density) { coordinates.size.height.toDp() }
                 },
@@ -812,6 +823,17 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             )
         }
     }
+    }
+
+    if (showMonthPickerDialog) {
+        MonthPickerDialog(
+            initialYearMonth = yearMonth,
+            currentYearMonth = YearMonth.from(today),
+            onMonthSelected = { selected ->
+                yearMonth = selected
+            },
+            onDismissRequest = { showMonthPickerDialog = false }
+        )
     }
 
     dialogDate?.let { target ->
@@ -1723,6 +1745,7 @@ private fun WorkSummary(
     hasPunches: Boolean,
     workdaysUpToToday: Int,
     dailyHours: Double,
+    monthLabel: String = "本月",
     modifier: Modifier = Modifier,
     isTimerClickable: Boolean = false,
     onClick: () -> Unit = {},
@@ -1766,13 +1789,13 @@ private fun WorkSummary(
             
             val isMonthlyClickable = monthlyHours > 0.0
 
-            // 新格式：本月已打卡：X +/- Y = XX小时
+            // 新格式：XX月已打卡：X +/- Y = XX小时
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = if (isMonthlyClickable) Modifier.clickable { onMonthlyStatsClick() } else Modifier
             ) {
                 Text(
-                    text = "本月已打卡：${workdaysUpToToday} X ${dailyHoursLabel} ",
+                    text = "${monthLabel}已打卡：${workdaysUpToToday} X ${dailyHoursLabel} ",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1794,7 +1817,7 @@ private fun WorkSummary(
             }
             
             Text(
-                text = if (isOvertime) "本月已多打：${displayHoursLabel}小时" else "还需打卡：${displayHoursLabel}小时",
+                text = if (isOvertime) "${monthLabel}已多打：${displayHoursLabel}小时" else "还需打卡：${displayHoursLabel}小时",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.combinedClickable(
@@ -1948,36 +1971,7 @@ private fun isDefaultWorkday(date: LocalDate): Boolean {
     return date.dayOfWeek.value in DayOfWeek.MONDAY.value..DayOfWeek.FRIDAY.value
 }
 
-private fun purgePreviousMonthData(
-    today: LocalDate,
-    punches: SnapshotStateList<Long>,
-    adjustInfo: () -> AdjustInfo?,
-    setAdjustInfo: (AdjustInfo?) -> Unit,
-    context: Context
-) {
-    if (today.dayOfMonth != 1) return
-    val previousMonth = YearMonth.from(today.minusMonths(1))
-    val hasPreviousMonthPunch = punches.any { ts ->
-        YearMonth.from(timestampToLocalDate(ts)) == previousMonth
-    }
-    val hasPreviousAdjust = adjustInfo()?.month == previousMonth
-    if (!hasPreviousMonthPunch && !hasPreviousAdjust) return
-    val removedPunches = punches.removeAll { ts ->
-        YearMonth.from(timestampToLocalDate(ts)) == previousMonth
-    }
-    val clearedAdjust = if (hasPreviousAdjust) {
-        setAdjustInfo(null)
-        true
-    } else {
-        false
-    }
-    if (removedPunches) {
-        savePunches(context, punches)
-    }
-    if (clearedAdjust) {
-        saveAdjustInfo(context, null)
-    }
-}
+
 
 fun addPunchTimestamp(context: Context, timestamp: Long = System.currentTimeMillis()) {
     val updated = loadPunches(context).toMutableList().apply {
@@ -2524,4 +2518,120 @@ private fun getPunchMode(context: Context): Int {
 private fun savePunchMode(context: Context, mode: Int) {
     val prefs = context.getSharedPreferences("dingding_prefs", Context.MODE_PRIVATE)
     prefs.edit().putInt(PREF_PUNCH_MODE, mode).apply()
+}
+
+@Composable
+private fun MonthPickerDialog(
+    initialYearMonth: YearMonth,
+    currentYearMonth: YearMonth,
+    onMonthSelected: (YearMonth) -> Unit,
+    onDismissRequest: () -> Unit
+) {
+    var pickerYear by remember { mutableStateOf(initialYearMonth.year) }
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                IconButton(onClick = { pickerYear -= 1 }) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowLeft,
+                        contentDescription = "上一年"
+                    )
+                }
+                Text(
+                    text = "${pickerYear}年",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+                IconButton(
+                    onClick = { pickerYear += 1 },
+                    enabled = pickerYear < currentYearMonth.year
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowRight,
+                        contentDescription = "下一年"
+                    )
+                }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                val months = (1..12)
+                val rows = months.chunked(3)
+                rows.forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        row.forEach { m ->
+                            val itemYearMonth = YearMonth.of(pickerYear, m)
+                            val isSelected = itemYearMonth == initialYearMonth
+                            val isCurrentRealMonth = itemYearMonth == currentYearMonth
+                            val isFuture = itemYearMonth.isAfter(currentYearMonth)
+
+                            val containerColor = when {
+                                isFuture -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f)
+                                isSelected -> MaterialTheme.colorScheme.primary
+                                isCurrentRealMonth -> MaterialTheme.colorScheme.primaryContainer
+                                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            }
+                            val contentColor = when {
+                                isFuture -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                                isSelected -> MaterialTheme.colorScheme.onPrimary
+                                isCurrentRealMonth -> MaterialTheme.colorScheme.onPrimaryContainer
+                                else -> MaterialTheme.colorScheme.onSurface
+                            }
+
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                                    .clickable(enabled = !isFuture) {
+                                        onMonthSelected(itemYearMonth)
+                                        onDismissRequest()
+                                    },
+                                shape = RoundedCornerShape(8.dp),
+                                color = containerColor,
+                                contentColor = contentColor,
+                                border = if (isCurrentRealMonth && !isSelected) {
+                                    BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                                } else null
+                            ) {
+                                Box(
+                                    contentAlignment = Alignment.Center,
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    Text(
+                                        text = "${m}月",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isSelected || isCurrentRealMonth) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    onMonthSelected(currentYearMonth)
+                    onDismissRequest()
+                }
+            ) {
+                Text("回到本月")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text("取消")
+            }
+        }
+    )
 }
