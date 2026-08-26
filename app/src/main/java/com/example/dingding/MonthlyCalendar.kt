@@ -25,8 +25,10 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -136,12 +138,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         configuration.screenWidthDp > configuration.screenHeightDp
     }
     val useWeekView = isSquareishScreen || isLandscape
-    val weeks = remember(yearMonth, useWeekView, today) {
+    val isPastMonth = yearMonth.isBefore(YearMonth.from(today))
+    val weeks = remember(yearMonth, useWeekView, today, isLandscape) {
         val monthGrid = buildMonthGrid(yearMonth)
-        if (useWeekView) {
-            monthGrid.firstOrNull { week -> week.contains(today) }?.let { listOf(it) } ?: listOf(monthGrid.first())
-        } else {
-            monthGrid
+        when {
+            isLandscape -> buildWeekWindow(monthGrid, today, 4)
+            useWeekView -> monthGrid.firstOrNull { week -> week.contains(today) }?.let { listOf(it) } ?: listOf(monthGrid.first())
+            else -> monthGrid
         }
     }
     val context = LocalContext.current
@@ -274,6 +277,14 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             punches.any { timestampToLocalDate(it) == targetDate }
         }
     }
+    val showMakeupFab by remember {
+        derivedStateOf {
+            val targetDate = selectedDate
+            targetDate != null &&
+                targetDate.isBefore(today) &&
+                punches.count { timestampToLocalDate(it) == targetDate } % 2 == 1
+        }
+    }
     val density = LocalDensity.current
     var workSummaryHeightDp by remember { mutableStateOf(0.dp) }
     var swipeOffsetX by remember { mutableStateOf(0f) }
@@ -368,11 +379,18 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             }
         }
     }
-    val isClockInNext by remember { derivedStateOf { punches.size % 2 == 0 } }
+    val isClockInNext by remember {
+        derivedStateOf { punches.count { timestampToLocalDate(it) == today } % 2 == 0 }
+    }
     val fabLabel by remember {
         derivedStateOf { if (isClockInNext) "上班打卡" else "下班打卡" }
     }
-    val baseFabVisible by remember { derivedStateOf { selectedDate == null || selectedDate == today } }
+    val baseFabVisible by remember {
+        derivedStateOf {
+            !yearMonth.isBefore(YearMonth.from(today)) &&
+                (selectedDate == null || selectedDate == today)
+        }
+    }
     val fabEnabled by remember { derivedStateOf { cooldownSeconds == 0 } }
     val dayHeaders = remember {
         listOf(
@@ -391,43 +409,42 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     val fabHeight = 56.dp
 
     Box(modifier = modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp, vertical = 16.dp)
-                .padding(bottom = fabHeight + fabPadding + gap)
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            val threshold = 100f
-                            if (swipeOffsetX < -threshold) {
-                                // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
-                                val currentSelected = selectedDate ?: today
-                                val targetDate = currentSelected.minusDays(1)
-                                if (YearMonth.from(targetDate) == yearMonth) {
-                                    selectedDate = targetDate
-                                }
-                            } else if (swipeOffsetX > threshold) {
-                                // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
-                                val currentSelected = selectedDate ?: today
-                                val targetDate = currentSelected.plusDays(1)
-                                if (YearMonth.from(targetDate) == yearMonth) {
-                                    selectedDate = targetDate
-                                }
+        val contentModifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp, vertical = 16.dp)
+            .padding(bottom = fabHeight + fabPadding + gap)
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures(
+                    onDragEnd = {
+                        val threshold = 100f
+                        if (swipeOffsetX < -threshold) {
+                            // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
+                            val currentSelected = selectedDate ?: today
+                            val targetDate = currentSelected.minusDays(1)
+                            if (YearMonth.from(targetDate) == yearMonth) {
+                                selectedDate = targetDate
                             }
-                            swipeOffsetX = 0f
-                        },
-                        onDragCancel = {
-                            swipeOffsetX = 0f
-                        },
-                        onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            swipeOffsetX += dragAmount
+                        } else if (swipeOffsetX > threshold) {
+                            // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
+                            val currentSelected = selectedDate ?: today
+                            val targetDate = currentSelected.plusDays(1)
+                            if (YearMonth.from(targetDate) == yearMonth) {
+                                selectedDate = targetDate
+                            }
                         }
-                    )
-                },
-            verticalArrangement = Arrangement.spacedBy(gap)
-        ) {
+                        swipeOffsetX = 0f
+                    },
+                    onDragCancel = {
+                        swipeOffsetX = 0f
+                    },
+                    onHorizontalDrag = { change, dragAmount ->
+                        change.consume()
+                        swipeOffsetX += dragAmount
+                    }
+                )
+            }
+
+        val calendarContent: @Composable ColumnScope.() -> Unit = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -483,7 +500,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 }
             }
             Column(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = if (isLandscape) {
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                } else {
+                    Modifier.fillMaxWidth()
+                },
                 verticalArrangement = Arrangement.spacedBy(0.dp)
             ) {
                 Row(
@@ -501,7 +524,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 }
                 weeks.forEach { week ->
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = if (isLandscape) {
+                            Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                        } else {
+                            Modifier.fillMaxWidth()
+                        },
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         week.forEach { date ->
@@ -518,7 +547,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 isToday = date == today,
                                 isWorkday = effectiveWorkday,
                                 isRestDay = isRestDay,
-                                hasPunchOnRestDay = hasPunch && isRestDay,
+                                hasPunchOnRestDay = hasPunch && (isRestDay || isPastMonth),
                                 onLongPress = {
                                     if (date.month == yearMonth.month) {
                                         dialogDate = date
@@ -534,16 +563,26 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                         selectedDate = date
                                     }
                                 },
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .aspectRatio(1f)
-                                    .padding(2.dp),
+                                modifier = if (isLandscape) {
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxHeight()
+                                        .padding(2.dp)
+                                } else {
+                                    Modifier
+                                        .weight(1f)
+                                        .aspectRatio(1f)
+                                        .padding(2.dp)
+                                },
                                 isSelected = date == selectedDate
                             )
                         }
                     }
                 }
             }
+        }
+
+        val summaryContent: @Composable ColumnScope.() -> Unit = {
             val todayPunches by remember { derivedStateOf { punches.filter { timestampToLocalDate(it) == today } } }
             val currentMonthLabel = if (yearMonth == YearMonth.from(today)) "本月" else "${yearMonth.monthValue}月"
             WorkSummary(
@@ -556,10 +595,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 workdaysUpToToday = workdaysUpToToday,
                 dailyHours = dailyHours,
                 monthLabel = currentMonthLabel,
-                modifier = Modifier.onGloballyPositioned { coordinates ->
-                    workSummaryHeightDp = with(density) { coordinates.size.height.toDp() }
-                },
+                modifier = Modifier
+                    .then(if (isLandscape) Modifier.weight(1f) else Modifier)
+                    .onGloballyPositioned { coordinates ->
+                        workSummaryHeightDp = with(density) { coordinates.size.height.toDp() }
+                    },
                 isTimerClickable = (selectedDate ?: today) == today && todayPunches.size % 2 != 0,
+                isPastMonth = isPastMonth,
                 onClick = { showTodayTimerDialog = true },
                 onMonthlyStatsClick = { showMonthlyStatsDialog = true },
                 onPlanClick = {
@@ -584,15 +626,18 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 }
             )
             AnimatedVisibility(
-                visible = hasTargetDatePunches,
+                visible = hasTargetDatePunches && !isPastMonth,
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically(),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(if (isLandscape) Modifier.weight(1f) else Modifier)
                     .padding(bottom = gap)
             ) {
                 Surface(
-                    modifier = (if (workSummaryHeightDp > 0.dp) {
+                    modifier = (if (isLandscape) {
+                        Modifier.fillMaxSize()
+                    } else if (workSummaryHeightDp > 0.dp) {
                         Modifier.fillMaxWidth().height(workSummaryHeightDp)
                     } else {
                         Modifier.fillMaxWidth()
@@ -781,46 +826,133 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     }
             }
         }
-    }
+        }
 
-    AnimatedVisibility(
-        visible = baseFabVisible,
-        enter = fadeIn() + scaleIn(),
-        exit = fadeOut() + scaleOut(),
-        modifier = Modifier
-            .align(Alignment.BottomEnd)
-            .padding(16.dp)
-    ) {
-        ExtendedFloatingActionButton(
-            modifier = Modifier,
-            containerColor = if (fabEnabled) {
-                if (isClockInNext) MaterialTheme.colorScheme.primary else Color.Black
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant
-            },
-            contentColor = if (fabEnabled) {
-                if (isClockInNext) MaterialTheme.colorScheme.onPrimary else Color.White
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-            shape = RoundedCornerShape(20.dp),
-            onClick = {
-                if (!fabEnabled) return@ExtendedFloatingActionButton
-                val nowTs = System.currentTimeMillis()
-                if (nowTs - lastPunchMillis < 10_000L) return@ExtendedFloatingActionButton
-                val now = System.currentTimeMillis()
-                punches.add(0, now)
-                lastPunchMillis = now
-                cooldownSeconds = 10
-                scope.launch {
-                    savePunches(context, punches)
+        if (isLandscape) {
+            Row(
+                modifier = contentModifier,
+                horizontalArrangement = Arrangement.spacedBy(gap)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(gap)
+                ) {
+                    calendarContent()
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(gap)
+                ) {
+                    summaryContent()
                 }
             }
+        } else {
+            Column(
+                modifier = contentModifier,
+                verticalArrangement = Arrangement.spacedBy(gap)
+            ) {
+                calendarContent()
+                summaryContent()
+            }
+        }
+    Column(
+        modifier = Modifier
+            .align(Alignment.BottomEnd)
+            .padding(16.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(gap)
+    ) {
+        AnimatedVisibility(
+            visible = showMakeupFab,
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut()
         ) {
-            Text(
-                text = if (cooldownSeconds > 0) "${fabLabel}(${cooldownSeconds}s)" else fabLabel,
-                style = MaterialTheme.typography.titleMedium
-            )
+            ExtendedFloatingActionButton(
+                modifier = Modifier,
+                containerColor = Color.Red,
+                contentColor = Color.White,
+                shape = RoundedCornerShape(20.dp),
+                onClick = {
+                    val targetDate = selectedDate ?: today
+                    val lastPunch = punches
+                        .filter { timestampToLocalDate(it) == targetDate }
+                        .maxOrNull()
+                    val defaultTime = lastPunch?.let {
+                        val lastTime = Instant.ofEpochMilli(it)
+                            .atZone(ZoneId.systemDefault())
+                            .toLocalTime()
+                        val candidate = lastTime.plusMinutes(1)
+                        if (candidate.isBefore(lastTime)) LocalTime.of(23, 59) else candidate
+                    } ?: LocalTime.now()
+                    TimePickerDialog(
+                        context,
+                        { _, hour, minute ->
+                            val time = LocalTime.of(hour, minute)
+                            val timestamp = LocalDateTime.of(targetDate, time)
+                                .atZone(ZoneId.systemDefault())
+                                .toInstant()
+                                .toEpochMilli()
+                            if (lastPunch != null && timestamp <= lastPunch) {
+                                Toast.makeText(context, "补打卡时间需晚于当天最后一次打卡", Toast.LENGTH_SHORT).show()
+                            } else if (timestamp > System.currentTimeMillis()) {
+                                Toast.makeText(context, "不能选择未来时间", Toast.LENGTH_SHORT).show()
+                            } else {
+                                punches.add(0, timestamp)
+                                scope.launch { savePunches(context, punches) }
+                            }
+                        },
+                        defaultTime.hour,
+                        defaultTime.minute,
+                        true
+                    ).show()
+                }
+            ) {
+                Text(
+                    text = "补打卡",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = baseFabVisible,
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut()
+        ) {
+            ExtendedFloatingActionButton(
+                modifier = Modifier,
+                containerColor = if (fabEnabled) {
+                    if (isClockInNext) MaterialTheme.colorScheme.primary else Color.Black
+                } else {
+                    MaterialTheme.colorScheme.surfaceVariant
+                },
+                contentColor = if (fabEnabled) {
+                    if (isClockInNext) MaterialTheme.colorScheme.onPrimary else Color.White
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                shape = RoundedCornerShape(20.dp),
+                onClick = {
+                    if (!fabEnabled) return@ExtendedFloatingActionButton
+                    val nowTs = System.currentTimeMillis()
+                    if (nowTs - lastPunchMillis < 10_000L) return@ExtendedFloatingActionButton
+                    val now = System.currentTimeMillis()
+                    punches.add(0, now)
+                    lastPunchMillis = now
+                    cooldownSeconds = 10
+                    scope.launch {
+                        savePunches(context, punches)
+                    }
+                }
+            ) {
+                Text(
+                    text = if (cooldownSeconds > 0) "${fabLabel}(${cooldownSeconds}s)" else fabLabel,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
         }
     }
     }
@@ -831,6 +963,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             currentYearMonth = YearMonth.from(today),
             onMonthSelected = { selected ->
                 yearMonth = selected
+                if (selected == YearMonth.from(today)) {
+                    selectedDate = today
+                }
             },
             onDismissRequest = { showMonthPickerDialog = false }
         )
@@ -1748,6 +1883,7 @@ private fun WorkSummary(
     monthLabel: String = "本月",
     modifier: Modifier = Modifier,
     isTimerClickable: Boolean = false,
+    isPastMonth: Boolean = false,
     onClick: () -> Unit = {},
     onMonthlyStatsClick: () -> Unit = {},
     onPlanClick: () -> Unit = {},
@@ -1816,27 +1952,29 @@ private fun WorkSummary(
                 )
             }
             
-            Text(
-                text = if (isOvertime) "${monthLabel}已多打：${displayHoursLabel}小时" else "还需打卡：${displayHoursLabel}小时",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.combinedClickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = rememberRipple(),
-                    onClick = onPlanClick,
-                    onLongClick = onPlanLongClick
+            if (!isPastMonth) {
+                Text(
+                    text = if (isOvertime) "${monthLabel}已多打：${displayHoursLabel}小时" else "还需打卡：${displayHoursLabel}小时",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.combinedClickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = rememberRipple(),
+                        onClick = onPlanClick,
+                        onLongClick = onPlanLongClick
+                    )
                 )
-            )
-            Text(
-                text = if (hasPunches) {
-                    "${targetDateLabel}：${targetDateHoursLabel}小时"
-                } else {
-                    targetDateLabel.replace("已打卡", "无打卡记录")
-                },
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = if (isTimerClickable) Modifier.clickable { onClick() } else Modifier
-            )
+                Text(
+                    text = if (hasPunches) {
+                        "${targetDateLabel}：${targetDateHoursLabel}小时"
+                    } else {
+                        targetDateLabel.replace("已打卡", "无打卡记录")
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = if (isTimerClickable) Modifier.clickable { onClick() } else Modifier
+                )
+            }
         }
     }
 }
@@ -1967,6 +2105,18 @@ private fun buildMonthGrid(month: YearMonth): List<List<LocalDate>> {
     return days.chunked(7)
 }
 
+private fun buildWeekWindow(
+    monthGrid: List<List<LocalDate>>,
+    today: LocalDate,
+    count: Int
+): List<List<LocalDate>> {
+    if (monthGrid.size <= count) return monthGrid
+    val todayIndex = monthGrid.indexOfFirst { week -> week.contains(today) }
+    if (todayIndex == -1) return monthGrid.take(count)
+    val start = (todayIndex - 1).coerceIn(0, monthGrid.size - count)
+    return monthGrid.subList(start, start + count)
+}
+
 private fun isDefaultWorkday(date: LocalDate): Boolean {
     return date.dayOfWeek.value in DayOfWeek.MONDAY.value..DayOfWeek.FRIDAY.value
 }
@@ -2015,7 +2165,8 @@ class PunchWidgetProvider : AppWidgetProvider() {
 
     private fun createRemoteViews(context: Context): RemoteViews {
         val views = RemoteViews(context.packageName, R.layout.widget_punch)
-        val isClockInNext = loadPunches(context).size % 2 == 0
+        val today = LocalDate.now()
+        val isClockInNext = loadPunches(context).count { timestampToLocalDate(it) == today } % 2 == 0
         if (isClockInNext) {
             views.setTextViewText(R.id.widgetButton, "上班打卡")
             views.setInt(R.id.widgetButton, "setBackgroundResource", R.drawable.bg_widget_clock_in)
@@ -2148,13 +2299,6 @@ private fun loadDailyHours(context: Context): Double {
     return prefs.getFloat(PREF_DAILY_HOURS, DEFAULT_DAILY_HOURS.toFloat()).toDouble()
 }
 
-private fun saveDailyHours(context: Context, hours: Double) {
-    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        .edit()
-        .putFloat(PREF_DAILY_HOURS, hours.toFloat())
-        .apply()
-}
-
 private fun loadPlannedDailyHours(context: Context): Double {
     val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     return prefs.getFloat(PREF_PLANNED_DAILY_HOURS, DEFAULT_PLANNED_DAILY_HOURS.toFloat()).toDouble()
@@ -2209,15 +2353,6 @@ private fun calculateHoursForDay(punches: List<Long>, date: LocalDate): Double {
     val zone = ZoneId.systemDefault()
     val start = date.atStartOfDay(zone).toInstant().toEpochMilli()
     val end = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-    val millis = calculateWorkedMillis(punches, start, end)
-    return millis / 3_600_000.0
-}
-
-private fun calculateHoursForMonth(punches: List<Long>, today: LocalDate): Double {
-    val zone = ZoneId.systemDefault()
-    val monthStartDate = today.withDayOfMonth(1)
-    val start = monthStartDate.atStartOfDay(zone).toInstant().toEpochMilli()
-    val end = monthStartDate.plusMonths(1).atStartOfDay(zone).toInstant().toEpochMilli()
     val millis = calculateWorkedMillis(punches, start, end)
     return millis / 3_600_000.0
 }
@@ -2409,7 +2544,14 @@ private fun calculateWorkedMillis(punches: List<Long>, rangeStart: Long, rangeEn
     var i = 0
     while (i < sorted.size) {
         val start = sorted[i]
-        val end = sorted.getOrNull(i + 1) ?: break
+        val end = sorted.getOrNull(i + 1)
+
+        // 只在同一个自然日内两两配对；跨天则说明当天是奇数条，最后一条单独记录不参与工时计算
+        if (end == null || timestampToLocalDate(start) != timestampToLocalDate(end)) {
+            i += 1
+            continue
+        }
+
         val intervalStart = maxOf(start, rangeStart)
         val intervalEnd = minOf(end, rangeEnd)
         if (intervalEnd > intervalStart) {
@@ -2511,12 +2653,12 @@ private const val PREF_ADJUST_END = "adjust_end"
 private const val PREF_PUNCH_MODE = "punch_mode"
 
 private fun getPunchMode(context: Context): Int {
-    val prefs = context.getSharedPreferences("dingding_prefs", Context.MODE_PRIVATE)
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     return prefs.getInt(PREF_PUNCH_MODE, 0)
 }
 
 private fun savePunchMode(context: Context, mode: Int) {
-    val prefs = context.getSharedPreferences("dingding_prefs", Context.MODE_PRIVATE)
+    val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
     prefs.edit().putInt(PREF_PUNCH_MODE, mode).apply()
 }
 
