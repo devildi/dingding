@@ -2616,17 +2616,7 @@ private fun validatePunchTime(
         }
     }
 
-    // 5. 验证单次工时不能超过12小时
-    for (i in sorted.indices step 2) {
-        if (i + 1 < sorted.size) {
-            val workMillis = sorted[i + 1] - sorted[i]
-            if (workMillis > 12 * 3_600_000L) {
-                return "单次工时不能超过12小时"
-            }
-        }
-    }
-
-    // 6. 验证每日总工时不能超过24小时
+    // 5. 验证每日总工时不能超过24小时
     var totalMillis = 0L
     for (i in sorted.indices step 2) {
         if (i + 1 < sorted.size) {
