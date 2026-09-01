@@ -74,6 +74,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Refresh
+import com.example.dingding.sync.LanSyncScreen
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.TextButton
@@ -237,12 +239,17 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         derivedStateOf { calculateHoursForDay(punches, today) }
     }
     val targetDateHours by remember {
-        derivedStateOf { calculateHoursForDay(punches, selectedDate ?: today) }
+        derivedStateOf {
+            val date = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+            if (date != null) calculateHoursForDay(punches, date) else 0.0
+        }
     }
     val targetDateLabel by remember {
         derivedStateOf {
-            val date = selectedDate ?: today
-            if (date == today) "今日已打卡" else "${date.monthValue}月${date.dayOfMonth}日已打卡"
+            val date = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+            if (date == null) ""
+            else if (date == today) "今日已打卡"
+            else "${date.monthValue}月${date.dayOfMonth}日已打卡"
         }
     }
     val monthHours by remember {
@@ -253,6 +260,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var lastPunchMillis by remember { mutableStateOf(0L) }
     var cooldownSeconds by remember { mutableStateOf(0) }
     var showResetAdjust by remember { mutableStateOf(false) }
+    var showSyncScreen by remember { mutableStateOf(false) }
     var showDailyHoursDialog by remember { mutableStateOf(false) }
     var showResetPlannedDialog by remember { mutableStateOf(false) }
     var showTodayTimerDialog by remember { mutableStateOf(false) }
@@ -273,8 +281,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var isSortDescending by remember { mutableStateOf(true) }
     val hasTargetDatePunches by remember {
         derivedStateOf {
-            val targetDate = selectedDate ?: today
-            punches.any { timestampToLocalDate(it) == targetDate }
+            val targetDate = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+            if (targetDate != null) {
+                punches.any { timestampToLocalDate(it) == targetDate }
+            } else {
+                false
+            }
         }
     }
     val showMakeupFab by remember {
@@ -312,12 +324,15 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             val currentPlannedDailyHours = plannedDailyHours
             val currentPlannedSetDate = plannedSetDate
 
-            val targetDate = selectedDate ?: today
-            val filtered = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }
-            val sorted = filtered.sorted()
-            if (sorted.isEmpty()) {
-                "$targetDate 无打卡记录"
+            val targetDate = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+            if (targetDate == null) {
+                null
             } else {
+                val filtered = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }
+                val sorted = filtered.sorted()
+                if (sorted.isEmpty()) {
+                    "$targetDate 无打卡记录"
+                } else {
                 val ordered = if (isSortDescending) sorted.reversed() else sorted
                 val displayLines = ordered.mapIndexed { index, ts ->
                     val lineNumber = if (isSortDescending) sorted.size - index else index + 1
@@ -379,6 +394,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             }
         }
     }
+}
     val isClockInNext by remember {
         derivedStateOf { punches.count { timestampToLocalDate(it) == today } % 2 == 0 }
     }
@@ -417,19 +433,20 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 detectHorizontalDragGestures(
                     onDragEnd = {
                         val threshold = 100f
-                        if (swipeOffsetX < -threshold) {
-                            // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
-                            val currentSelected = selectedDate ?: today
-                            val targetDate = currentSelected.minusDays(1)
-                            if (YearMonth.from(targetDate) == yearMonth) {
-                                selectedDate = targetDate
-                            }
-                        } else if (swipeOffsetX > threshold) {
-                            // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
-                            val currentSelected = selectedDate ?: today
-                            val targetDate = currentSelected.plusDays(1)
-                            if (YearMonth.from(targetDate) == yearMonth) {
-                                selectedDate = targetDate
+                        val currentSelected = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+                        if (currentSelected != null) {
+                            if (swipeOffsetX < -threshold) {
+                                // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
+                                val targetDate = currentSelected.minusDays(1)
+                                if (YearMonth.from(targetDate) == yearMonth) {
+                                    selectedDate = targetDate
+                                }
+                            } else if (swipeOffsetX > threshold) {
+                                // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
+                                val targetDate = currentSelected.plusDays(1)
+                                if (YearMonth.from(targetDate) == yearMonth) {
+                                    selectedDate = targetDate
+                                }
                             }
                         }
                         swipeOffsetX = 0f
@@ -472,31 +489,48 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                             .size(24.dp)
                     )
                 }
-                val adjustButtonInteraction = remember { MutableInteractionSource() }
-                val ripple = rememberRipple(bounded = true)
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    tonalElevation = 1.dp,
-                    modifier = Modifier
-                        .pointerInput(Unit) {
-                            detectTapGestures(
-                                onLongPress = { showResetAdjust = true },
-                                onTap = {
-                                    adjustFormula = ""
-                                    adjustDate = LocalDate.now().minusDays(1)
-                                    adjustTime = LocalTime.now()
-                                    showAdjustDialog = true
-                                }
-                            )
-                        }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Text(
-                        text = "修正工时",
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        style = MaterialTheme.typography.labelLarge
-                    )
+                    IconButton(
+                        onClick = { showSyncScreen = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "数据同步",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
+                    val adjustButtonInteraction = remember { MutableInteractionSource() }
+                    val ripple = rememberRipple(bounded = true)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        tonalElevation = 1.dp,
+                        modifier = Modifier
+                            .pointerInput(Unit) {
+                                detectTapGestures(
+                                    onLongPress = { showResetAdjust = true },
+                                    onTap = {
+                                        adjustFormula = ""
+                                        adjustDate = LocalDate.now().minusDays(1)
+                                        adjustTime = LocalTime.now()
+                                        showAdjustDialog = true
+                                    }
+                                )
+                            }
+                    ) {
+                        Text(
+                            text = "修正工时",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            style = MaterialTheme.typography.labelLarge
+                        )
+                    }
                 }
             }
             Column(
@@ -600,7 +634,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     .onGloballyPositioned { coordinates ->
                         workSummaryHeightDp = with(density) { coordinates.size.height.toDp() }
                     },
-                isTimerClickable = (selectedDate ?: today) == today && todayPunches.size % 2 != 0,
+                isTimerClickable = ((if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate) == today) && todayPunches.size % 2 != 0,
                 isPastMonth = isPastMonth,
                 onClick = { showTodayTimerDialog = true },
                 onMonthlyStatsClick = { showMonthlyStatsDialog = true },
@@ -626,7 +660,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 }
             )
             AnimatedVisibility(
-                visible = hasTargetDatePunches && !isPastMonth,
+                visible = hasTargetDatePunches,
                 enter = fadeIn() + expandVertically(),
                 exit = fadeOut() + shrinkVertically(),
                 modifier = Modifier
@@ -645,19 +679,20 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         detectHorizontalDragGestures(
                             onDragEnd = {
                                 val threshold = 100f
-                                if (swipeOffsetX < -threshold) {
-                                    // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
-                                    val currentSelected = selectedDate ?: today
-                                    val targetDate = currentSelected.minusDays(1)
-                                    if (YearMonth.from(targetDate) == yearMonth) {
-                                        selectedDate = targetDate
-                                    }
-                                } else if (swipeOffsetX > threshold) {
-                                    // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
-                                    val currentSelected = selectedDate ?: today
-                                    val targetDate = currentSelected.plusDays(1)
-                                    if (YearMonth.from(targetDate) == yearMonth) {
-                                        selectedDate = targetDate
+                                val currentSelected = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+                                if (currentSelected != null) {
+                                    if (swipeOffsetX < -threshold) {
+                                        // 左滑（向左拉动，手指往左移，偏移量为负） -> 前一天
+                                        val targetDate = currentSelected.minusDays(1)
+                                        if (YearMonth.from(targetDate) == yearMonth) {
+                                            selectedDate = targetDate
+                                        }
+                                    } else if (swipeOffsetX > threshold) {
+                                        // 右滑（向右拉动，手指往右移，偏移量为正） -> 后一天
+                                        val targetDate = currentSelected.plusDays(1)
+                                        if (YearMonth.from(targetDate) == yearMonth) {
+                                            selectedDate = targetDate
+                                        }
                                     }
                                 }
                                 swipeOffsetX = 0f
@@ -677,8 +712,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     Box(modifier = Modifier.fillMaxSize()) {
                         punchDisplay?.let { text ->
                             val lines = text.split("\n")
-                            val targetDate = selectedDate ?: today
-                            val filteredPunches = punches.filter { ts -> timestampToLocalDate(ts) == targetDate }.sorted()
+                            val targetDate = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+                            val filteredPunches = if (targetDate != null) {
+                                punches.filter { ts -> timestampToLocalDate(ts) == targetDate }.sorted()
+                            } else {
+                                emptyList()
+                            }
 
                             LazyColumn(
                                 modifier = Modifier
@@ -759,11 +798,11 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                                                 context,
                                                                 { _, hour, minute ->
                                                                     val newTime = LocalTime.of(hour, minute)
-                                                                    val newDateTime = LocalDateTime.of(targetDate, newTime)
+                                                                    val newDateTime = LocalDateTime.of(targetDate!!, newTime)
                                                                     val newTimestamp = newDateTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
 
                                                                     val validationError = validatePunchTime(
-                                                                        targetDate = targetDate,
+                                                                        targetDate = targetDate!!,
                                                                         editingIndex = punchIndex!!,
                                                                         newTimestamp = newTimestamp,
                                                                         allPunches = filteredPunches,
@@ -809,7 +848,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 }
                             }
                         }
-                        if (punches.count { timestampToLocalDate(it) == (selectedDate ?: today) } > 1) {
+                        val targetDateForSort = if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate
+                        if (targetDateForSort != null && punches.count { timestampToLocalDate(it) == targetDateForSort } > 1) {
                             IconButton(
                                 onClick = { isSortDescending = !isSortDescending },
                                 modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)
@@ -963,11 +1003,28 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             currentYearMonth = YearMonth.from(today),
             onMonthSelected = { selected ->
                 yearMonth = selected
-                if (selected == YearMonth.from(today)) {
-                    selectedDate = today
-                }
+                selectedDate = if (selected == YearMonth.from(today)) today else null
             },
             onDismissRequest = { showMonthPickerDialog = false }
+        )
+    }
+
+    if (showSyncScreen) {
+        LanSyncScreen(
+            onDismissRequest = { showSyncScreen = false },
+            onSyncSuccess = {
+                punches.clear()
+                punches.addAll(loadPunches(context))
+                overrides.clear()
+                overrides.putAll(loadOverrides(context))
+                dailyHours = loadDailyHours(context)
+                plannedDailyHours = loadPlannedDailyHours(context)
+                plannedSetDate = loadPlannedSetDate(context)
+                adjustInfo = loadAdjustInfo(context)
+                punchMode = getPunchMode(context)
+                selectedCalendarDates.clear()
+                selectedCalendarDates.addAll(loadSelectedCalendarDates(context).filter { !it.isBefore(today) })
+            }
         )
     }
 
@@ -1973,6 +2030,16 @@ private fun WorkSummary(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = if (isTimerClickable) Modifier.clickable { onClick() } else Modifier
+                )
+            } else if (targetDateLabel.isNotEmpty()) {
+                Text(
+                    text = if (hasPunches) {
+                        "${targetDateLabel}：${targetDateHoursLabel}小时"
+                    } else {
+                        targetDateLabel.replace("已打卡", "无打卡记录")
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
