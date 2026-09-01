@@ -63,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 enum class SyncMode {
@@ -88,6 +89,7 @@ fun LanSyncScreen(
     var isSyncing by remember { mutableStateOf(false) }
     var targetIp by remember { mutableStateOf("") }
     var isSuccess by remember { mutableStateOf(false) }
+    var senderState by remember { mutableStateOf<SyncServerState>(SyncServerState.Idle) }
 
     val focusRequester = remember { FocusRequester() }
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -95,6 +97,7 @@ fun LanSyncScreen(
 
     DisposableEffect(Unit) {
         onDispose {
+            syncManager.onServerStateChanged = null
             syncManager.stopServer()
             syncManager.deleteBackup()
         }
@@ -102,21 +105,26 @@ fun LanSyncScreen(
 
     LaunchedEffect(mode) {
         if (mode == SyncMode.SENDER) {
+            syncManager.onServerStateChanged = { state ->
+                scope.launch(Dispatchers.Main) {
+                    senderState = state
+                }
+            }
             try {
-                val ip = syncManager.startServer()
-                serverIp = ip
-                syncStatus = "服务运行于 $ip"
                 val summary = syncManager.exportData()
                 backupSummary = summary
-                syncStatus = "数据打包就绪，等待接收方连接..."
+                val ip = syncManager.startServer()
+                serverIp = ip
             } catch (e: Exception) {
-                syncStatus = "服务启动失败: ${e.message}"
+                senderState = SyncServerState.Error(null, "服务启动失败: ${e.message}")
             }
         } else if (mode == SyncMode.RECEIVER) {
+            syncManager.onServerStateChanged = null
             syncManager.stopServer()
             syncManager.deleteBackup()
             serverIp = ""
             backupSummary = null
+            senderState = SyncServerState.Idle
         }
     }
 
@@ -275,7 +283,11 @@ fun LanSyncScreen(
                     Spacer(modifier = Modifier.height(24.dp))
 
                     if (serverIp.isNotBlank()) {
-                        val cleanIp = serverIp.substringBefore(":")
+                        val cleanIp = if (serverIp.endsWith(":8080")) {
+                            serverIp.substringBefore(":")
+                        } else {
+                            serverIp
+                        }
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
@@ -307,17 +319,118 @@ fun LanSyncScreen(
 
                     Spacer(modifier = Modifier.height(16.dp))
 
-                    Text(
-                        text = syncStatus,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.primary,
-                        textAlign = TextAlign.Center
-                    )
+                    when (val state = senderState) {
+                        is SyncServerState.Transferring -> {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(24.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = "接收方已连接，正在同步传输数据...",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                        }
+                        is SyncServerState.Success -> {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { onDismissRequest() },
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFF4CAF50).copy(alpha = 0.15f)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = Color(0xFF4CAF50),
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = "数据同步成功！接收方已完成导入",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF2E7D32)
+                                        )
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "点击此处返回首页",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF2E7D32).copy(alpha = 0.8f)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        is SyncServerState.Error -> {
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+                                ),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text(
+                                        text = "同步失败: ${state.message}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                        else -> {
+                            Text(
+                                text = "数据打包就绪，等待接收方连接...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(24.dp))
 
                     Text(
-                        text = "保持此页面打开，直到接收方提示完成同步。",
+                        text = if (senderState is SyncServerState.Success) {
+                            "数据已成功同步完毕，可点击上方卡片或返回按钮退出。"
+                        } else {
+                            "保持此页面打开，直到接收方提示完成同步。"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -389,12 +502,16 @@ fun LanSyncScreen(
                     if (syncStatus.isNotBlank()) {
                         Spacer(modifier = Modifier.height(24.dp))
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = isSuccess) {
+                                    onDismissRequest()
+                                },
                             colors = CardDefaults.cardColors(
                                 containerColor = if (isSuccess) {
                                     Color(0xFF4CAF50).copy(alpha = 0.15f)
                                 } else {
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
                                 }
                             ),
                             shape = RoundedCornerShape(12.dp)
@@ -411,12 +528,32 @@ fun LanSyncScreen(
                                         modifier = Modifier.size(28.dp)
                                     )
                                     Spacer(modifier = Modifier.width(12.dp))
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(28.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(12.dp))
                                 }
-                                Text(
-                                    text = syncStatus,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface
-                                )
+                                Column {
+                                    Text(
+                                        text = syncStatus,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = if (isSuccess) FontWeight.SemiBold else FontWeight.Normal,
+                                        color = if (isSuccess) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error
+                                    )
+                                    if (isSuccess) {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = "点击此处返回首页",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Medium,
+                                            color = Color(0xFF2E7D32).copy(alpha = 0.8f)
+                                        )
+                                    }
+                                }
                             }
                         }
                     }

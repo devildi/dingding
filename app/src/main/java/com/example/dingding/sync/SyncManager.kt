@@ -70,6 +70,14 @@ data class ImportSummary(
     val hasAdjustInfo: Boolean
 )
 
+sealed class SyncServerState {
+    object Idle : SyncServerState()
+    data class Ready(val serverIp: String) : SyncServerState()
+    data class Transferring(val clientIp: String) : SyncServerState()
+    data class Success(val clientIp: String) : SyncServerState()
+    data class Error(val clientIp: String?, val message: String) : SyncServerState()
+}
+
 class SyncManager(private val context: Context) {
     private val gson: Gson = GsonBuilder()
         .serializeNulls()
@@ -81,6 +89,7 @@ class SyncManager(private val context: Context) {
     private val zipFile = File(backupDir, "backup.zip")
 
     private var server: SimpleWebServer? = null
+    var onServerStateChanged: ((SyncServerState) -> Unit)? = null
 
     suspend fun exportData(): BackupSummary = withContext(Dispatchers.IO) {
         if (!backupDir.exists()) backupDir.mkdirs()
@@ -174,106 +183,134 @@ class SyncManager(private val context: Context) {
             .url("http://$finalIp/backup.zip")
             .build()
 
-        val response = client.newCall(request).execute()
+        val response = try {
+            client.newCall(request).execute()
+        } catch (e: Exception) {
+            throw Exception("无法连接到发送端 ($finalIp)，请确保在同一网络并检查 IP 地址")
+        }
+
         if (!response.isSuccessful) {
             throw Exception("连接失败 HTTP code: ${response.code}")
         }
 
-        val tempZip = File(context.cacheDir, "import_temp.zip")
-        val destDir = File(context.cacheDir, "import_temp_extracted")
-        if (destDir.exists()) destDir.deleteRecursively()
-        destDir.mkdirs()
+        try {
+            val tempZip = File(context.cacheDir, "import_temp.zip")
+            val destDir = File(context.cacheDir, "import_temp_extracted")
+            if (destDir.exists()) destDir.deleteRecursively()
+            destDir.mkdirs()
 
-        FileOutputStream(tempZip).use { output ->
-            response.body?.byteStream()?.copyTo(output) ?: throw Exception("响应体为空")
-        }
-
-        ZipInputStream(FileInputStream(tempZip)).use { zipIn ->
-            var entry = zipIn.nextEntry
-            while (entry != null) {
-                val filePath = File(destDir, entry.name)
-                if (!entry.isDirectory) {
-                    filePath.parentFile?.mkdirs()
-                    FileOutputStream(filePath).use { output ->
-                        zipIn.copyTo(output)
-                    }
-                }
-                zipIn.closeEntry()
-                entry = zipIn.nextEntry
+            FileOutputStream(tempZip).use { output ->
+                response.body?.byteStream()?.copyTo(output) ?: throw Exception("响应体为空")
             }
+
+            ZipInputStream(FileInputStream(tempZip)).use { zipIn ->
+                var entry = zipIn.nextEntry
+                while (entry != null) {
+                    val filePath = File(destDir, entry.name)
+                    if (!entry.isDirectory) {
+                        filePath.parentFile?.mkdirs()
+                        FileOutputStream(filePath).use { output ->
+                            zipIn.copyTo(output)
+                        }
+                    }
+                    zipIn.closeEntry()
+                    entry = zipIn.nextEntry
+                }
+            }
+
+            val jsonFile = File(destDir, "data.json")
+            if (!jsonFile.exists()) {
+                throw Exception("未找到 data.json 备份数据文件")
+            }
+
+            val json = jsonFile.readText()
+            val backupData = gson.fromJson(json, DingdingBackupData::class.java)
+                ?: throw Exception("解析备份数据失败")
+
+            // 写入 SharedPreferences
+            val edit = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+
+            // 1. Punches
+            val serializedPunches = backupData.punches.joinToString(",")
+            edit.putString(PREF_PUNCHES, serializedPunches)
+
+            // 2. Overrides
+            val serializedOverrides = backupData.overrides.entries.joinToString(",") { (date, isWorkday) ->
+                "$date=${if (isWorkday) "1" else "0"}"
+            }
+            edit.putString(PREF_OVERRIDES, serializedOverrides)
+
+            // 3. Daily Hours
+            edit.putFloat(PREF_DAILY_HOURS, backupData.dailyHours.toFloat())
+            edit.putFloat(PREF_PLANNED_DAILY_HOURS, backupData.plannedDailyHours.toFloat())
+
+            // 4. Planned set date
+            if (!backupData.plannedSetDate.isNullOrBlank()) {
+                edit.putString(PREF_PLANNED_SET_DATE, backupData.plannedSetDate)
+            } else {
+                edit.remove(PREF_PLANNED_SET_DATE)
+            }
+
+            // 5. Selected calendar dates
+            val serializedSelectedDates = backupData.selectedCalendarDates.joinToString(",")
+            edit.putString(PREF_SELECTED_CALENDAR_DATES, serializedSelectedDates)
+
+            // 6. Adjust info
+            val adj = backupData.adjustInfo
+            if (adj != null && adj.month.isNotBlank() && !adj.hours.isNaN() && adj.endMillis > 0) {
+                edit.putString(PREF_ADJUST_MONTH, adj.month)
+                edit.putLong(PREF_ADJUST_HOURS, adj.hours.toRawBits())
+                edit.putLong(PREF_ADJUST_END, adj.endMillis)
+            } else {
+                edit.remove(PREF_ADJUST_MONTH)
+                edit.remove(PREF_ADJUST_HOURS)
+                edit.remove(PREF_ADJUST_END)
+            }
+
+            // 7. Punch mode
+            edit.putInt(PREF_PUNCH_MODE, backupData.punchMode)
+
+            edit.apply()
+
+            // 发送广播触发桌面 Widget 更新状态
+            val appWidgetManager = AppWidgetManager.getInstance(context)
+            val component = ComponentName(context, PunchWidgetProvider::class.java)
+            val ids = appWidgetManager.getAppWidgetIds(component)
+            val updateIntent = Intent(context, PunchWidgetProvider::class.java).apply {
+                action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
+                putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids)
+            }
+            context.sendBroadcast(updateIntent)
+
+            // 通知发送端：同步成功
+            try {
+                val confirmReq = Request.Builder()
+                    .url("http://$finalIp/sync_complete?status=success")
+                    .build()
+                client.newCall(confirmReq).execute().close()
+            } catch (e: Exception) {
+                Log.w("SyncManager", "Failed to send sync success confirmation: ${e.message}")
+            }
+
+            return@withContext ImportSummary(
+                totalSizeBytes = tempZip.length(),
+                punchCount = backupData.punches.size,
+                overrideCount = backupData.overrides.size,
+                calendarDateCount = backupData.selectedCalendarDates.size,
+                hasAdjustInfo = backupData.adjustInfo != null
+            )
+        } catch (e: Exception) {
+            // 通知发送端：同步失败
+            try {
+                val encodedErr = java.net.URLEncoder.encode(e.message ?: "数据导入失败", "UTF-8")
+                val failReq = Request.Builder()
+                    .url("http://$finalIp/sync_complete?status=fail&error=$encodedErr")
+                    .build()
+                client.newCall(failReq).execute().close()
+            } catch (ignored: Exception) {
+            }
+            throw e
         }
-
-        val jsonFile = File(destDir, "data.json")
-        if (!jsonFile.exists()) {
-            throw Exception("未找到 data.json 备份数据文件")
-        }
-
-        val json = jsonFile.readText()
-        val backupData = gson.fromJson(json, DingdingBackupData::class.java)
-            ?: throw Exception("解析备份数据失败")
-
-        // 写入 SharedPreferences
-        val edit = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
-
-        // 1. Punches
-        val serializedPunches = backupData.punches.joinToString(",")
-        edit.putString(PREF_PUNCHES, serializedPunches)
-
-        // 2. Overrides
-        val serializedOverrides = backupData.overrides.entries.joinToString(",") { (date, isWorkday) ->
-            "$date=${if (isWorkday) "1" else "0"}"
-        }
-        edit.putString(PREF_OVERRIDES, serializedOverrides)
-
-        // 3. Daily Hours
-        edit.putFloat(PREF_DAILY_HOURS, backupData.dailyHours.toFloat())
-        edit.putFloat(PREF_PLANNED_DAILY_HOURS, backupData.plannedDailyHours.toFloat())
-
-        // 4. Planned set date
-        if (!backupData.plannedSetDate.isNullOrBlank()) {
-            edit.putString(PREF_PLANNED_SET_DATE, backupData.plannedSetDate)
-        } else {
-            edit.remove(PREF_PLANNED_SET_DATE)
-        }
-
-        // 5. Selected calendar dates
-        val serializedSelectedDates = backupData.selectedCalendarDates.joinToString(",")
-        edit.putString(PREF_SELECTED_CALENDAR_DATES, serializedSelectedDates)
-
-        // 6. Adjust info
-        val adj = backupData.adjustInfo
-        if (adj != null && adj.month.isNotBlank() && !adj.hours.isNaN() && adj.endMillis > 0) {
-            edit.putString(PREF_ADJUST_MONTH, adj.month)
-            edit.putLong(PREF_ADJUST_HOURS, adj.hours.toRawBits())
-            edit.putLong(PREF_ADJUST_END, adj.endMillis)
-        } else {
-            edit.remove(PREF_ADJUST_MONTH)
-            edit.remove(PREF_ADJUST_HOURS)
-            edit.remove(PREF_ADJUST_END)
-        }
-
-        // 7. Punch mode
-        edit.putInt(PREF_PUNCH_MODE, backupData.punchMode)
-
-        edit.apply()
-
-        // 发送广播触发桌面 Widget 更新状态
-        val appWidgetManager = AppWidgetManager.getInstance(context)
-        val component = ComponentName(context, PunchWidgetProvider::class.java)
-        val ids = appWidgetManager.getAppWidgetIds(component)
-        val updateIntent = Intent(context, PunchWidgetProvider::class.java).apply {
-            action = AppWidgetManager.ACTION_APPWIDGET_UPDATE
-            putExtra(AppWidgetManager.EXTRA_APPWIDGET_IDS, ids)
-        }
-        context.sendBroadcast(updateIntent)
-
-        return@withContext ImportSummary(
-            totalSizeBytes = tempZip.length(),
-            punchCount = backupData.punches.size,
-            overrideCount = backupData.overrides.size,
-            calendarDateCount = backupData.selectedCalendarDates.size,
-            hasAdjustInfo = backupData.adjustInfo != null
-        )
     }
 
     fun startServer(startPort: Int = 8080): String {
@@ -285,10 +322,14 @@ class SyncManager(private val context: Context) {
 
         while (port <= maxPort) {
             try {
-                val myServer = SimpleWebServer(port, backupDir)
+                val myServer = SimpleWebServer(port, backupDir) { state ->
+                    onServerStateChanged?.invoke(state)
+                }
                 myServer.start()
                 server = myServer
                 val ip = getDeviceIpAddress()
+                val fullAddress = if (port == 8080) ip else "$ip:$port"
+                onServerStateChanged?.invoke(SyncServerState.Ready(fullAddress))
                 return "$ip:$port"
             } catch (e: Exception) {
                 lastException = e
@@ -297,12 +338,15 @@ class SyncManager(private val context: Context) {
             }
         }
 
-        throw lastException ?: Exception("未能找到可用端口（$startPort-$maxPort）")
+        val err = lastException ?: Exception("未能找到可用端口（$startPort-$maxPort）")
+        onServerStateChanged?.invoke(SyncServerState.Error(null, err.message ?: "服务启动失败"))
+        throw err
     }
 
     fun stopServer() {
         server?.stop()
         server = null
+        onServerStateChanged?.invoke(SyncServerState.Idle)
     }
 
     fun deleteBackup() {
@@ -333,15 +377,36 @@ class SyncManager(private val context: Context) {
         return "Unknown"
     }
 
-    private class SimpleWebServer(port: Int, private val rootDir: File) : NanoHTTPD(port) {
+    private class SimpleWebServer(
+        port: Int,
+        private val rootDir: File,
+        private val onStateChange: (SyncServerState) -> Unit
+    ) : NanoHTTPD(port) {
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
+            val clientIp = session.remoteIpAddress ?: "未知设备"
+
             if (uri == "/backup.zip") {
                 val file = File(rootDir, "backup.zip")
                 if (file.exists()) {
-                    return newChunkedResponse(Response.Status.OK, "application/zip", FileInputStream(file))
+                    onStateChange(SyncServerState.Transferring(clientIp))
+                    return newFixedLengthResponse(Response.Status.OK, "application/zip", FileInputStream(file), file.length())
+                } else {
+                    onStateChange(SyncServerState.Error(clientIp, "备份数据文件不存在"))
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Backup file not found")
                 }
+            } else if (uri == "/sync_complete") {
+                val status = session.parameters["status"]?.firstOrNull()
+                val error = session.parameters["error"]?.firstOrNull()
+                if (status == "success") {
+                    onStateChange(SyncServerState.Success(clientIp))
+                } else {
+                    val msg = error ?: "接收端处理失败"
+                    onStateChange(SyncServerState.Error(clientIp, msg))
+                }
+                return newFixedLengthResponse(Response.Status.OK, "text/plain", "OK")
             }
+
             return newFixedLengthResponse("Hello from Dingding Sync Server!")
         }
     }
