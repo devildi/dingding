@@ -568,7 +568,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         week.forEach { date ->
-                            val effectiveWorkday = if (date.month == yearMonth.month) {
+                            val isCurrentMonth = date.month == yearMonth.month && date.year == yearMonth.year
+                            val effectiveWorkday = if (isCurrentMonth) {
                                 overrides[date] ?: isDefaultWorkday(date)
                             } else {
                                 false
@@ -577,23 +578,23 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                             val hasPunch = punches.any { ts -> timestampToLocalDate(ts) == date }
                             DayCell(
                                 date = date,
-                                isCurrentMonth = date.month == yearMonth.month,
+                                isCurrentMonth = isCurrentMonth,
                                 isToday = date == today,
                                 isWorkday = effectiveWorkday,
                                 isRestDay = isRestDay,
-                                hasPunchOnRestDay = hasPunch && (isRestDay || isPastMonth),
+                                hasPunchOnRestDay = isCurrentMonth && hasPunch && (isRestDay || isPastMonth),
                                 onLongPress = {
-                                    if (date.month == yearMonth.month) {
+                                    if (isCurrentMonth) {
                                         dialogDate = date
                                     }
                                 },
                                 onDoubleClick = {
-                                    if (date.month == yearMonth.month) {
+                                    if (isCurrentMonth) {
                                         clearPunchDate = date
                                     }
                                 },
                                 onClick = {
-                                    if (date.month == yearMonth.month) {
+                                    if (isCurrentMonth) {
                                         selectedDate = date
                                     }
                                 },
@@ -2113,7 +2114,7 @@ private fun DayCell(
                 color = textColor,
                 style = MaterialTheme.typography.bodyLarge
             )
-            if (hasPunchOnRestDay) {
+            if (isCurrentMonth && hasPunchOnRestDay) {
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
