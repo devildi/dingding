@@ -2564,8 +2564,6 @@ private fun DayCell(
     }
     val background = when {
         !isCurrentMonth -> Color.Transparent
-        shiftType == "DAY" -> Color(0xFFF59E0B).copy(alpha = 0.15f)
-        shiftType == "NIGHT" -> Color(0xFF3730A3).copy(alpha = 0.15f)
         isWorkday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
         else -> Color.Transparent
     }
