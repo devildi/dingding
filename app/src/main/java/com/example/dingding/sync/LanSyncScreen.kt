@@ -236,7 +236,8 @@ fun LanSyncScreen(
                                     "打卡记录" to summary.punchCount,
                                     "工作日设置" to summary.overrideCount,
                                     "计划日历" to summary.calendarDateCount,
-                                    "工时修正" to if (summary.hasAdjustInfo) 1 else 0
+                                    "工时修正" to if (summary.hasAdjustInfo) 1 else 0,
+                                    "排班记录" to summary.scheduleShiftCount
                                 ).filter { it.value > 0 }
 
                                 if (piData.isNotEmpty()) {
@@ -246,7 +247,8 @@ fun LanSyncScreen(
                                             MaterialTheme.colorScheme.primary,
                                             MaterialTheme.colorScheme.secondary,
                                             MaterialTheme.colorScheme.tertiary,
-                                            MaterialTheme.colorScheme.error
+                                            MaterialTheme.colorScheme.error,
+                                            Color(0xFFF59E0B)
                                         )
                                     )
                                 } else {
@@ -470,7 +472,8 @@ fun LanSyncScreen(
                                 try {
                                     val summary = syncManager.importData(targetIp)
                                     val sizeKb = String.format("%.1f", summary.totalSizeBytes / 1024.0)
-                                    syncStatus = "同步成功！\n数据大小: ${sizeKb} KB\n打卡记录: ${summary.punchCount} 条\n工作日设置: ${summary.overrideCount} 项"
+                                    val shiftInfo = if (summary.scheduleShiftCount > 0) "\n排班记录: ${summary.scheduleShiftCount} 天" else ""
+                                    syncStatus = "同步成功！\n数据大小: ${sizeKb} KB\n打卡记录: ${summary.punchCount} 条\n工作日设置: ${summary.overrideCount} 项$shiftInfo"
                                     isSuccess = true
                                     Toast.makeText(context, "数据同步成功！", Toast.LENGTH_SHORT).show()
                                     onSyncSuccess()

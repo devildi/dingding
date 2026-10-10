@@ -63,7 +63,8 @@ data class BackupSummary(
     val overrideCount: Int,
     val calendarDateCount: Int,
     val hasAdjustInfo: Boolean,
-    val totalSizeBytes: Long
+    val totalSizeBytes: Long,
+    val scheduleShiftCount: Int = 0
 )
 
 data class ImportSummary(
@@ -71,7 +72,8 @@ data class ImportSummary(
     val punchCount: Int,
     val overrideCount: Int,
     val calendarDateCount: Int,
-    val hasAdjustInfo: Boolean
+    val hasAdjustInfo: Boolean,
+    val scheduleShiftCount: Int = 0
 )
 
 sealed class SyncServerState {
@@ -160,13 +162,16 @@ class SyncManager(private val context: Context) {
 
         zipSingleFile(backupJsonFile, zipFile)
 
+        val shiftCount = if (scheduleShifts.isNotBlank()) scheduleShifts.split(",").filter { it.isNotBlank() }.size else 0
+
         return@withContext BackupSummary(
             file = zipFile,
             punchCount = punchesList.size,
             overrideCount = overridesMap.size,
             calendarDateCount = selectedDatesList.size,
             hasAdjustInfo = adjustInfoBackup != null,
-            totalSizeBytes = zipFile.length()
+            totalSizeBytes = zipFile.length(),
+            scheduleShiftCount = shiftCount
         )
     }
 
@@ -308,12 +313,15 @@ class SyncManager(private val context: Context) {
                 Log.w("SyncManager", "Failed to send sync success confirmation: ${e.message}")
             }
 
+            val shiftCount = if (backupData.scheduleShifts.isNotBlank()) backupData.scheduleShifts.split(",").filter { it.isNotBlank() }.size else 0
+
             return@withContext ImportSummary(
                 totalSizeBytes = tempZip.length(),
                 punchCount = backupData.punches.size,
                 overrideCount = backupData.overrides.size,
                 calendarDateCount = backupData.selectedCalendarDates.size,
-                hasAdjustInfo = backupData.adjustInfo != null
+                hasAdjustInfo = backupData.adjustInfo != null,
+                scheduleShiftCount = shiftCount
             )
         } catch (e: Exception) {
             // 通知发送端：同步失败

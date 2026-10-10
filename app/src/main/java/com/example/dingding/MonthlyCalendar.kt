@@ -725,6 +725,12 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         val summaryContent: @Composable ColumnScope.() -> Unit = {
             val todayPunches by remember { derivedStateOf { punches.filter { timestampToLocalDate(it) == today } } }
             val currentMonthLabel = if (yearMonth == YearMonth.from(today)) "本月" else "${yearMonth.monthValue}月"
+            val hasMonthData by remember {
+                derivedStateOf {
+                    adjustInfo?.month == yearMonth ||
+                    punches.any { timestampToLocalDate(it).let { d -> YearMonth.from(d) == yearMonth } }
+                }
+            }
             WorkSummary(
                 workdays = workdayCount,
                 totalHours = totalWorkHours,
@@ -735,6 +741,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 workdaysUpToToday = workdaysUpToToday,
                 dailyHours = dailyHours,
                 monthLabel = currentMonthLabel,
+                hasMonthData = hasMonthData,
                 modifier = Modifier
                     .then(if (isLandscape) Modifier.weight(1f) else Modifier)
                     .onGloballyPositioned { coordinates ->
@@ -743,7 +750,11 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 isTimerClickable = ((if (yearMonth == YearMonth.from(today)) (selectedDate ?: today) else selectedDate) == today) && todayPunches.size % 2 != 0,
                 isPastMonth = isPastMonth,
                 onClick = { showTodayTimerDialog = true },
-                onMonthlyStatsClick = { showMonthlyStatsDialog = true },
+                onMonthlyStatsClick = {
+                    if (hasMonthData) {
+                        showMonthlyStatsDialog = true
+                    }
+                },
                 onPlanClick = openPlanDialog,
                 onPlanLongClick = {
                     showResetPlannedDialog = true
@@ -1116,6 +1127,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 selectedCalendarDates.addAll(loadSelectedCalendarDates(context).filter { !it.isBefore(today) })
                 scheduleShiftMap.clear()
                 scheduleShiftMap.putAll(loadScheduleShifts(context))
+                defaultScheduleUser = loadScheduleDefaultUser(context)
             }
         )
     }
@@ -2423,6 +2435,7 @@ private fun WorkSummary(
     modifier: Modifier = Modifier,
     isTimerClickable: Boolean = false,
     isPastMonth: Boolean = false,
+    hasMonthData: Boolean = false,
     onClick: () -> Unit = {},
     onMonthlyStatsClick: () -> Unit = {},
     onPlanClick: () -> Unit = {},
@@ -2462,7 +2475,7 @@ private fun WorkSummary(
                 fontWeight = FontWeight.Medium
             )
             
-            val isMonthlyClickable = monthlyHours > 0.0
+            val isMonthlyClickable = hasMonthData
 
             // 新格式：XX月已打卡：X +/- Y = XX小时
             Row(
@@ -2986,11 +2999,12 @@ private fun MonthlyStatsDialog(
         } else null
 
         val daysInMonth = (1..yearMonth.lengthOfMonth()).map { yearMonth.atDay(it) }
+        val now = System.currentTimeMillis()
         daysInMonth.filter { date ->
             val isAdjusted = adjustedEndDate != null && (date < adjustedEndDate || date == adjustedEndDate)
             val isDateValid = if (date == today) {
                 val todayPunches = punches.filter { timestampToLocalDate(it) == today }
-                todayPunches.isNotEmpty() && todayPunches.size % 2 == 0
+                todayPunches.isNotEmpty()
             } else {
                 date < today
             }
@@ -3001,13 +3015,27 @@ private fun MonthlyStatsDialog(
             var dailyTotalMillis = 0L
             for (i in 0 until dailyPunches.size step 2) {
                 val start = dailyPunches[i]
-                val end = dailyPunches.getOrNull(i + 1) ?: start
-                if (end >= start) {
-                    dailyTotalMillis += (end - start)
+                val end = dailyPunches.getOrNull(i + 1)
+                if (end != null) {
+                    if (end >= start) {
+                        dailyTotalMillis += (end - start)
+                    }
+                } else if (date == today) {
+                    // 今日奇数次打卡（上班进行中），实时计算从打卡起到当前的时间
+                    if (now > start) {
+                        dailyTotalMillis += (now - start)
+                    }
                 }
             }
             Triple(date, dailyTotalMillis / (1000.0 * 3600.0), isWorkday)
         }.filter { it.second > 0.0 }.reversed()
+    }
+
+    if (stats.isEmpty() && (adjustInfo == null || adjustInfo.month != yearMonth)) {
+        LaunchedEffect(Unit) {
+            onDismissRequest()
+        }
+        return
     }
 
     val maxHours = remember(stats) {
