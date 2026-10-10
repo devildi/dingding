@@ -10,9 +10,13 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import android.widget.RemoteViews
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.text.KeyboardOptions
@@ -44,12 +48,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -74,7 +80,9 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.ui.draw.clip
 import com.example.dingding.sync.LanSyncScreen
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -105,11 +113,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -262,6 +273,42 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var showResetAdjust by remember { mutableStateOf(false) }
     var showSyncScreen by remember { mutableStateOf(false) }
     var showDailyHoursDialog by remember { mutableStateOf(false) }
+    var showScheduleDialog by remember { mutableStateOf(false) }
+    var showClearScheduleDialog by remember { mutableStateOf(false) }
+    var isNightShift by remember { mutableStateOf(false) }
+    val scheduleShiftMap = remember(context) {
+        mutableStateMapOf<LocalDate, String>().apply {
+            putAll(loadScheduleShifts(context))
+        }
+    }
+    var pendingScheduleData by remember { mutableStateOf<ParsedScheduleData?>(null) }
+    var selectedPersonForImport by remember { mutableStateOf("") }
+    var defaultScheduleUser by remember(context) { mutableStateOf(loadScheduleDefaultUser(context)) }
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch(Dispatchers.IO) {
+                val parsed = ScheduleExcelParser.parse(context, uri, yearMonth)
+                withContext(Dispatchers.Main) {
+                    if (parsed == null || parsed.personSchedules.isEmpty()) {
+                        Toast.makeText(context, "未能从表格中识别到排班数据", Toast.LENGTH_SHORT).show()
+                    } else {
+                        pendingScheduleData = parsed
+                        val defaultUser = loadScheduleDefaultUser(context)
+                        selectedPersonForImport = if (defaultUser in parsed.personSchedules.keys) {
+                            defaultUser
+                        } else if ("吴迪" in parsed.personSchedules.keys) {
+                            "吴迪"
+                        } else {
+                            parsed.personSchedules.keys.first()
+                        }
+                    }
+                }
+            }
+        }
+    }
     var showResetPlannedDialog by remember { mutableStateOf(false) }
     var showTodayTimerDialog by remember { mutableStateOf(false) }
     var showDeletePunchDialog by remember { mutableStateOf(false) }
@@ -300,6 +347,24 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     val density = LocalDensity.current
     var workSummaryHeightDp by remember { mutableStateOf(0.dp) }
     var swipeOffsetX by remember { mutableStateOf(0f) }
+
+    val openPlanDialog: () -> Unit = {
+        val remainingHoursForPrefill = totalWorkHours - monthHours
+        val includesToday = today in selectedCalendarDates
+        val totalNeeded = if (includesToday) {
+            todayHours + kotlin.math.max(0.0, remainingHoursForPrefill)
+        } else {
+            kotlin.math.max(0.0, remainingHoursForPrefill)
+        }
+        val daysFromPlan = if (plannedDailyHours > 0) {
+            kotlin.math.ceil(totalNeeded / plannedDailyHours).toInt()
+        } else {
+            0
+        }
+        dailyHoursInput = daysFromPlan.toString()
+        plannedDailyHoursInput = String.format(locale, "%.1f", plannedDailyHours)
+        showDailyHoursDialog = true
+    }
 
     val latestPunch = punches.firstOrNull() ?: 0L
     LaunchedEffect(latestPunch) {
@@ -493,6 +558,35 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = rememberRipple(bounded = true),
+                                onClick = { showScheduleDialog = true },
+                                onLongClick = {
+                                    val currentMonthCount = scheduleShiftMap.keys.count {
+                                        it.year == yearMonth.year && it.month == yearMonth.month
+                                    }
+                                    if (currentMonthCount == 0) {
+                                        Toast.makeText(context, "${yearMonth.monthValue}月暂无排班数据", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        showClearScheduleDialog = true
+                                    }
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DateRange,
+                            contentDescription = "本月排班",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
                     IconButton(
                         onClick = { showSyncScreen = true },
                         modifier = Modifier.size(36.dp)
@@ -505,31 +599,40 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         )
                     }
 
-                    val adjustButtonInteraction = remember { MutableInteractionSource() }
-                    val ripple = rememberRipple(bounded = true)
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = MaterialTheme.colorScheme.primary,
-                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                        tonalElevation = 1.dp,
+                    Box(
                         modifier = Modifier
-                            .pointerInput(Unit) {
-                                detectTapGestures(
-                                    onLongPress = { showResetAdjust = true },
-                                    onTap = {
-                                        adjustFormula = ""
-                                        adjustDate = LocalDate.now().minusDays(1)
-                                        adjustTime = LocalTime.now()
-                                        showAdjustDialog = true
-                                    }
-                                )
-                            }
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = rememberRipple(bounded = true),
+                                onClick = {
+                                    adjustFormula = ""
+                                    adjustDate = LocalDate.now().minusDays(1)
+                                    adjustTime = LocalTime.now()
+                                    showAdjustDialog = true
+                                },
+                                onLongClick = {
+                                    showResetAdjust = true
+                                }
+                            ),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = "修正工时",
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            style = MaterialTheme.typography.labelLarge
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "修正工时",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
                         )
+                        if (adjustInfo != null && adjustInfo?.month == yearMonth) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(top = 4.dp, end = 4.dp)
+                                    .size(6.dp)
+                                    .background(MaterialTheme.colorScheme.error, shape = CircleShape)
+                            )
+                        }
                     }
                 }
             }
@@ -576,6 +679,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                             }
                             val isRestDay = !effectiveWorkday
                             val hasPunch = punches.any { ts -> timestampToLocalDate(ts) == date }
+                            val shiftType = if (isCurrentMonth) scheduleShiftMap[date] else null
                             DayCell(
                                 date = date,
                                 isCurrentMonth = isCurrentMonth,
@@ -583,6 +687,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 isWorkday = effectiveWorkday,
                                 isRestDay = isRestDay,
                                 hasPunchOnRestDay = isCurrentMonth && hasPunch && (isRestDay || isPastMonth),
+                                shiftType = shiftType,
                                 onLongPress = {
                                     if (isCurrentMonth) {
                                         dialogDate = date
@@ -639,23 +744,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 isPastMonth = isPastMonth,
                 onClick = { showTodayTimerDialog = true },
                 onMonthlyStatsClick = { showMonthlyStatsDialog = true },
-                onPlanClick = {
-                    val remainingHoursForPrefill = totalWorkHours - monthHours
-                    val includesToday = today in selectedCalendarDates
-                    val totalNeeded = if (includesToday) {
-                        todayHours + kotlin.math.max(0.0, remainingHoursForPrefill)
-                    } else {
-                        kotlin.math.max(0.0, remainingHoursForPrefill)
-                    }
-                    val daysFromPlan = if (plannedDailyHours > 0) {
-                        kotlin.math.ceil(totalNeeded / plannedDailyHours).toInt()
-                    } else {
-                        0
-                    }
-                    dailyHoursInput = daysFromPlan.toString()
-                    plannedDailyHoursInput = String.format(locale, "%.1f", plannedDailyHours)
-                    showDailyHoursDialog = true
-                },
+                onPlanClick = openPlanDialog,
                 onPlanLongClick = {
                     showResetPlannedDialog = true
                 }
@@ -1025,6 +1114,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 punchMode = getPunchMode(context)
                 selectedCalendarDates.clear()
                 selectedCalendarDates.addAll(loadSelectedCalendarDates(context).filter { !it.isBefore(today) })
+                scheduleShiftMap.clear()
+                scheduleShiftMap.putAll(loadScheduleShifts(context))
             }
         )
     }
@@ -1925,6 +2016,396 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         )
     }
 
+    if (showScheduleDialog) {
+        val calendarWeeks = remember(yearMonth) { buildMonthGrid(yearMonth) }
+
+        AlertDialog(
+            onDismissRequest = {
+                scheduleShiftMap.clear()
+                scheduleShiftMap.putAll(loadScheduleShifts(context))
+                showScheduleDialog = false
+            },
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "本月排班",
+                        style = MaterialTheme.typography.titleLarge,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .combinedClickable(
+                                onClick = {
+                                    try {
+                                        filePickerLauncher.launch(arrayOf("*/*"))
+                                    } catch (e: Exception) {
+                                        try {
+                                            val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                                                addCategory(Intent.CATEGORY_OPENABLE)
+                                                type = "*/*"
+                                            }
+                                            context.startActivity(Intent.createChooser(intent, "选择文件"))
+                                        } catch (e2: Exception) {
+                                            Toast.makeText(context, "无法打开文件系统: ${e2.message}", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                },
+                                onLongClick = {
+                                    val toRemove = scheduleShiftMap.keys.filter {
+                                        it.year == yearMonth.year && it.month == yearMonth.month
+                                    }
+                                    if (toRemove.isEmpty()) {
+                                        Toast.makeText(context, "${yearMonth.monthValue}月暂无排班数据", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        toRemove.forEach { scheduleShiftMap.remove(it) }
+                                        saveScheduleShifts(context, scheduleShiftMap.toMap())
+                                        Toast.makeText(context, "已清空${yearMonth.year}年${yearMonth.monthValue}月排班数据", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            )
+                            .padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "白班",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (!isNightShift) FontWeight.Bold else FontWeight.Normal,
+                            color = if (!isNightShift) Color(0xFFD97706) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clickable { isNightShift = false }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        )
+                        Switch(
+                            checked = isNightShift,
+                            onCheckedChange = { isNightShift = it },
+                            modifier = Modifier
+                                .scale(0.8f)
+                                .padding(horizontal = 2.dp)
+                        )
+                        Text(
+                            text = "夜班",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (isNightShift) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isNightShift) Color(0xFF4338CA) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clickable { isNightShift = true }
+                                .padding(horizontal = 6.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        listOf(
+                            DayOfWeek.MONDAY,
+                            DayOfWeek.TUESDAY,
+                            DayOfWeek.WEDNESDAY,
+                            DayOfWeek.THURSDAY,
+                            DayOfWeek.FRIDAY,
+                            DayOfWeek.SATURDAY,
+                            DayOfWeek.SUNDAY
+                        ).forEach { day ->
+                            Text(
+                                modifier = Modifier.weight(1f),
+                                text = day.getDisplayName(TextStyle.SHORT, locale),
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                    calendarWeeks.forEach { week ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            week.forEach { date ->
+                                val isCurrentMonth = date.month == yearMonth.month
+                                val shiftType = scheduleShiftMap[date] // "DAY", "NIGHT" 或 null
+
+                                val bgColor = when {
+                                    shiftType == "DAY" -> Color(0xFFF59E0B) // 白班：阳光琥珀橙
+                                    shiftType == "NIGHT" -> Color(0xFF3730A3) // 夜班：深邃星夜蓝
+                                    isCurrentMonth -> MaterialTheme.colorScheme.surfaceVariant // 本月未选中：灰色
+                                    else -> Color.Transparent // 非本月：透明
+                                }
+                                val textColor = when {
+                                    shiftType != null -> Color.White
+                                    isCurrentMonth -> MaterialTheme.colorScheme.onSurfaceVariant
+                                    else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.25f)
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .aspectRatio(1f)
+                                        .padding(1.dp)
+                                        .background(bgColor, RoundedCornerShape(4.dp))
+                                        .then(
+                                            if (isCurrentMonth) {
+                                                Modifier.clickable {
+                                                    val currentTargetShift = if (isNightShift) "NIGHT" else "DAY"
+                                                    if (shiftType == currentTargetShift) {
+                                                        scheduleShiftMap.remove(date)
+                                                    } else {
+                                                        scheduleShiftMap[date] = currentTargetShift
+                                                    }
+                                                }
+                                            } else Modifier
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Text(
+                                            text = date.dayOfMonth.toString(),
+                                            color = textColor,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = if (shiftType != null) FontWeight.Bold else FontWeight.Normal,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        if (shiftType != null) {
+                                            Text(
+                                                text = if (shiftType == "DAY") "白" else "夜",
+                                                color = Color.White.copy(alpha = 0.9f),
+                                                fontSize = 9.sp,
+                                                lineHeight = 10.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                textAlign = TextAlign.Center
+                                            )
+                                        }
+                                    }
+                                    if (date == today) {
+                                        Box(
+                                            modifier = Modifier
+                                                .align(Alignment.BottomCenter)
+                                                .fillMaxWidth(0.6f)
+                                                .height(2.dp)
+                                                .background(
+                                                    if (shiftType != null) Color.White
+                                                    else MaterialTheme.colorScheme.error
+                                                )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        saveScheduleShifts(context, scheduleShiftMap.toMap())
+                        showScheduleDialog = false
+                    }
+                ) {
+                    val monthShifts = scheduleShiftMap.filter { (d, _) -> d.year == yearMonth.year && d.month == yearMonth.month }
+                    val dayCount = monthShifts.values.count { it == "DAY" }
+                    val nightCount = monthShifts.values.count { it == "NIGHT" }
+                    val countText = if (monthShifts.isNotEmpty()) {
+                        "确定(白:$dayCount 夜:$nightCount)"
+                    } else {
+                        "确定"
+                    }
+                    Text(countText)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        scheduleShiftMap.clear()
+                        scheduleShiftMap.putAll(loadScheduleShifts(context))
+                        showScheduleDialog = false
+                    }
+                ) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    if (showClearScheduleDialog) {
+        val monthTitle = "${yearMonth.year}年${yearMonth.monthValue}月"
+        AlertDialog(
+            onDismissRequest = { showClearScheduleDialog = false },
+            title = { Text("清空排班数据") },
+            text = { Text("是否清空${monthTitle}的所有排班数据？") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val toRemove = scheduleShiftMap.keys.filter {
+                            it.year == yearMonth.year && it.month == yearMonth.month
+                        }
+                        toRemove.forEach { scheduleShiftMap.remove(it) }
+                        saveScheduleShifts(context, scheduleShiftMap.toMap())
+                        showClearScheduleDialog = false
+                        Toast.makeText(context, "已清空${monthTitle}排班数据", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("确定", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearScheduleDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    pendingScheduleData?.let { data ->
+        AlertDialog(
+            onDismissRequest = { pendingScheduleData = null },
+            title = {
+                Text(
+                    text = "选择你的姓名",
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "识别到以下排班人员，选择后将导入对应的白班/夜班排班：",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    val defaultUser = defaultScheduleUser
+                    val sortedList = data.personSchedules.entries.sortedByDescending { it.value.size }
+
+                    sortedList.forEach { (name, dates) ->
+                        val isSelected = selectedPersonForImport == name
+                        val isDefault = name == defaultUser
+                        val dayCount = dates.count { data.shiftTypes[Pair(name, it)] != "NIGHT" }
+                        val nightCount = dates.size - dayCount
+                        val countText = when {
+                            nightCount > 0 && dayCount > 0 -> "${dates.size} 天（白$dayCount/夜$nightCount）"
+                            nightCount > 0 -> "${dates.size} 天（夜班）"
+                            else -> "${dates.size} 天（白班）"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedPersonForImport = name }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    RadioButton(
+                                        selected = isSelected,
+                                        onClick = { selectedPersonForImport = name }
+                                    )
+                                    Text(
+                                        text = name,
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                    if (isDefault) {
+                                        Surface(
+                                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                            shape = RoundedCornerShape(4.dp)
+                                        ) {
+                                            Text(
+                                                text = "默认",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                Text(
+                                    text = countText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val name = selectedPersonForImport
+                        if (name.isNotBlank()) {
+                            saveScheduleDefaultUser(context, name)
+                            defaultScheduleUser = name
+
+                            if (data.allDates.isNotEmpty()) {
+                                val targetMonth = YearMonth.from(data.allDates.first())
+                                if (targetMonth != yearMonth) {
+                                    yearMonth = targetMonth
+                                }
+                            }
+
+                            data.allDates.forEach { date ->
+                                scheduleShiftMap.remove(date)
+                            }
+
+                            val userDates = data.personSchedules[name] ?: emptyList()
+                            var importedDayCount = 0
+                            var importedNightCount = 0
+                            userDates.forEach { date ->
+                                val shift = data.shiftTypes[Pair(name, date)] ?: "DAY"
+                                scheduleShiftMap[date] = shift
+                                if (shift == "NIGHT") importedNightCount++ else importedDayCount++
+                            }
+
+                            saveScheduleShifts(context, scheduleShiftMap.toMap())
+                            val toastMsg = when {
+                                importedNightCount > 0 && importedDayCount > 0 ->
+                                    "已导入 $name 的排班，共 ${userDates.size} 天（白班 $importedDayCount 天，夜班 $importedNightCount 天）"
+                                importedNightCount > 0 ->
+                                    "已导入 $name 的排班，共 ${userDates.size} 天（夜班）"
+                                else ->
+                                    "已导入 $name 的排班，共 ${userDates.size} 天（白班）"
+                            }
+                            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                        }
+                        pendingScheduleData = null
+                    }
+                ) {
+                    Text("确定")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingScheduleData = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -2060,17 +2541,20 @@ private fun DayCell(
     onDoubleClick: () -> Unit,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
-    isSelected: Boolean = false
+    isSelected: Boolean = false,
+    shiftType: String? = null
 ) {
     val textColor = when {
         !isCurrentMonth -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-        isRestDay -> MaterialTheme.colorScheme.onSurfaceVariant
+        isRestDay && shiftType == null -> MaterialTheme.colorScheme.onSurfaceVariant
         else -> MaterialTheme.colorScheme.onSurface
     }
-    val background = if (isCurrentMonth && isWorkday) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
-    } else {
-        Color.Transparent
+    val background = when {
+        !isCurrentMonth -> Color.Transparent
+        shiftType == "DAY" -> Color(0xFFF59E0B).copy(alpha = 0.15f)
+        shiftType == "NIGHT" -> Color(0xFF3730A3).copy(alpha = 0.15f)
+        isWorkday -> MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+        else -> Color.Transparent
     }
 
     val animatedAlpha by animateFloatAsState(
@@ -2112,8 +2596,29 @@ private fun DayCell(
             Text(
                 text = date.dayOfMonth.toString(),
                 color = textColor,
-                style = MaterialTheme.typography.bodyLarge
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (shiftType != null) FontWeight.SemiBold else FontWeight.Normal
             )
+            if (isCurrentMonth && shiftType != null) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 2.dp, end = 2.dp)
+                        .background(
+                            color = if (shiftType == "DAY") Color(0xFFF59E0B) else Color(0xFF3730A3),
+                            shape = RoundedCornerShape(2.dp)
+                        )
+                        .padding(horizontal = 2.5.dp, vertical = 0.5.dp)
+                ) {
+                    Text(
+                        text = if (shiftType == "DAY") "白" else "夜",
+                        color = Color.White,
+                        fontSize = 8.sp,
+                        fontWeight = FontWeight.Bold,
+                        lineHeight = 9.sp
+                    )
+                }
+            }
             if (isCurrentMonth && hasPunchOnRestDay) {
                 Box(
                     modifier = Modifier
@@ -2279,6 +2784,8 @@ private const val PREF_DAILY_HOURS = "daily_hours"
 private const val PREF_PLANNED_DAILY_HOURS = "planned_daily_hours"
 private const val PREF_PLANNED_SET_DATE = "planned_set_date"
 private const val PREF_SELECTED_CALENDAR_DATES = "selected_calendar_dates"
+private const val PREF_SCHEDULE_SHIFTS = "schedule_shifts"
+private const val PREF_SCHEDULE_DEFAULT_USER = "schedule_default_user"
 
 /** 默认每日标准工时（小时） */
 const val DEFAULT_DAILY_HOURS = 7.5
@@ -2414,6 +2921,43 @@ private fun saveSelectedCalendarDates(context: Context, dates: List<LocalDate>) 
     context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(PREF_SELECTED_CALENDAR_DATES, serialized)
+        .apply()
+}
+
+fun loadScheduleShifts(context: Context): Map<LocalDate, String> {
+    val raw = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getString(PREF_SCHEDULE_SHIFTS, "") ?: ""
+    if (raw.isBlank()) return emptyMap()
+    return raw.split(",")
+        .mapNotNull { entry ->
+            val parts = entry.split("=")
+            if (parts.size != 2) return@mapNotNull null
+            val date = runCatching { LocalDate.parse(parts[0]) }.getOrNull() ?: return@mapNotNull null
+            val shift = parts[1].trim()
+            if (shift == "DAY" || shift == "NIGHT") date to shift else null
+        }
+        .toMap()
+}
+
+fun saveScheduleShifts(context: Context, scheduleMap: Map<LocalDate, String>) {
+    val serialized = scheduleMap.entries.joinToString(",") { (date, shift) ->
+        "${date}=${shift}"
+    }
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_SCHEDULE_SHIFTS, serialized)
+        .apply()
+}
+
+fun loadScheduleDefaultUser(context: Context): String {
+    return context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .getString(PREF_SCHEDULE_DEFAULT_USER, "") ?: ""
+}
+
+fun saveScheduleDefaultUser(context: Context, userName: String) {
+    context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(PREF_SCHEDULE_DEFAULT_USER, userName)
         .apply()
 }
 

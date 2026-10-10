@@ -33,6 +33,8 @@ private const val PREF_ADJUST_MONTH = "adjust_month"
 private const val PREF_ADJUST_HOURS = "adjust_hours"
 private const val PREF_ADJUST_END = "adjust_end"
 private const val PREF_PUNCH_MODE = "punch_mode"
+private const val PREF_SCHEDULE_SHIFTS = "schedule_shifts"
+private const val PREF_SCHEDULE_DEFAULT_USER = "schedule_default_user"
 
 data class AdjustInfoBackup(
     val month: String,
@@ -50,7 +52,9 @@ data class DingdingBackupData(
     val plannedSetDate: String? = null,
     val selectedCalendarDates: List<String> = emptyList(),
     val adjustInfo: AdjustInfoBackup? = null,
-    val punchMode: Int = 0
+    val punchMode: Int = 0,
+    val scheduleShifts: String = "",
+    val scheduleDefaultUser: String = ""
 )
 
 data class BackupSummary(
@@ -133,6 +137,8 @@ class SyncManager(private val context: Context) {
         } else null
 
         val punchMode = prefs.getInt(PREF_PUNCH_MODE, 0)
+        val scheduleShifts = prefs.getString(PREF_SCHEDULE_SHIFTS, "") ?: ""
+        val scheduleDefaultUser = prefs.getString(PREF_SCHEDULE_DEFAULT_USER, "") ?: ""
 
         val backupData = DingdingBackupData(
             version = 1,
@@ -144,7 +150,9 @@ class SyncManager(private val context: Context) {
             plannedSetDate = plannedSetDate,
             selectedCalendarDates = selectedDatesList,
             adjustInfo = adjustInfoBackup,
-            punchMode = punchMode
+            punchMode = punchMode,
+            scheduleShifts = scheduleShifts,
+            scheduleDefaultUser = scheduleDefaultUser
         )
 
         val json = gson.toJson(backupData)
@@ -269,6 +277,14 @@ class SyncManager(private val context: Context) {
 
             // 7. Punch mode
             edit.putInt(PREF_PUNCH_MODE, backupData.punchMode)
+
+            // 8. Schedule shifts & default user
+            if (backupData.scheduleShifts.isNotBlank()) {
+                edit.putString(PREF_SCHEDULE_SHIFTS, backupData.scheduleShifts)
+            }
+            if (backupData.scheduleDefaultUser.isNotBlank()) {
+                edit.putString(PREF_SCHEDULE_DEFAULT_USER, backupData.scheduleDefaultUser)
+            }
 
             edit.apply()
 
