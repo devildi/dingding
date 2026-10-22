@@ -345,7 +345,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     val showMakeupFab by remember {
         derivedStateOf {
             val targetDate = selectedDate
-            if (targetDate != null && targetDate.isBefore(today)) {
+            if (targetDate != null && targetDate.isBefore(today) && YearMonth.from(targetDate) == YearMonth.from(today)) {
                 val count = punches.count { timestampToLocalDate(it) == targetDate }
                 val isWorkday = overrides[targetDate] ?: isDefaultWorkday(targetDate)
                 count % 2 == 1 || (count == 0 && isWorkday)
@@ -690,7 +690,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                             val isRestDay = !effectiveWorkday
                             val punchCount = punches.count { ts -> timestampToLocalDate(ts) == date }
                             val hasPunch = punchCount > 0
-                            val isMissingPunch = isCurrentMonth && date.isBefore(today) && (
+                            val isMissingPunch = isCurrentMonth && date.isBefore(today) && YearMonth.from(date) == YearMonth.from(today) && (
                                 punchCount % 2 == 1 || (punchCount == 0 && effectiveWorkday)
                             )
                             val shiftType = if (isCurrentMonth) scheduleShiftMap[date] else null
@@ -1077,6 +1077,10 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 ),
                 onClick = {
                     val targetDate = selectedDate ?: today
+                    if (YearMonth.from(targetDate) != YearMonth.from(today)) {
+                        Toast.makeText(context, "补打卡仅对本月有效", Toast.LENGTH_SHORT).show()
+                        return@ExtendedFloatingActionButton
+                    }
                     val targetPunches = punches.filter { timestampToLocalDate(it) == targetDate }
                     if (targetPunches.isEmpty()) {
                         fullDayMakeupTargetDate = targetDate
@@ -1096,6 +1100,10 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         TimePickerDialog(
                             context,
                             { _, hour, minute ->
+                                if (YearMonth.from(targetDate) != YearMonth.from(today)) {
+                                    Toast.makeText(context, "补打卡仅对本月有效", Toast.LENGTH_SHORT).show()
+                                    return@TimePickerDialog
+                                }
                                 val time = LocalTime.of(hour, minute)
                                 val timestamp = LocalDateTime.of(targetDate, time)
                                     .atZone(ZoneId.systemDefault())
@@ -1318,6 +1326,11 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             confirmButton = {
                 Button(
                     onClick = {
+                        if (YearMonth.from(targetDate) != YearMonth.from(today)) {
+                            Toast.makeText(context, "补打卡仅对本月有效", Toast.LENGTH_SHORT).show()
+                            showFullDayMakeupDialog = false
+                            return@Button
+                        }
                         if (fullDayMakeupTimes.size < 2) {
                             Toast.makeText(context, "至少需要输入两次时间戳", Toast.LENGTH_SHORT).show()
                             return@Button
