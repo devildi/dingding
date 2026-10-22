@@ -53,6 +53,7 @@ import androidx.compose.material.ripple.rememberRipple
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -178,6 +179,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var dialogDate by remember { mutableStateOf<LocalDate?>(null) }
     var clearPunchDate by remember { mutableStateOf<LocalDate?>(null) }
     var selectedDate by remember { mutableStateOf<LocalDate?>(null) }
+    var showFullDayMakeupDialog by remember { mutableStateOf(false) }
+    var fullDayMakeupTargetDate by remember { mutableStateOf<LocalDate?>(null) }
+    val fullDayMakeupTimes = remember { mutableStateListOf<LocalTime>() }
     var showAdjustDialog by remember { mutableStateOf(false) }
     var showMonthPickerDialog by remember { mutableStateOf(false) }
     var adjustInfo by remember(context) { mutableStateOf(loadAdjustInfo(context)) }
@@ -339,9 +343,13 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     val showMakeupFab by remember {
         derivedStateOf {
             val targetDate = selectedDate
-            targetDate != null &&
-                targetDate.isBefore(today) &&
-                punches.count { timestampToLocalDate(it) == targetDate } % 2 == 1
+            if (targetDate != null && targetDate.isBefore(today)) {
+                val count = punches.count { timestampToLocalDate(it) == targetDate }
+                val isWorkday = overrides[targetDate] ?: isDefaultWorkday(targetDate)
+                count % 2 == 1 || (count == 0 && isWorkday)
+            } else {
+                false
+            }
         }
     }
     val density = LocalDensity.current
@@ -678,7 +686,11 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 false
                             }
                             val isRestDay = !effectiveWorkday
-                            val hasPunch = punches.any { ts -> timestampToLocalDate(ts) == date }
+                            val punchCount = punches.count { ts -> timestampToLocalDate(ts) == date }
+                            val hasPunch = punchCount > 0
+                            val isMissingPunch = isCurrentMonth && date.isBefore(today) && (
+                                punchCount % 2 == 1 || (punchCount == 0 && effectiveWorkday)
+                            )
                             val shiftType = if (isCurrentMonth) scheduleShiftMap[date] else null
                             DayCell(
                                 date = date,
@@ -688,6 +700,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 isRestDay = isRestDay,
                                 hasPunchOnRestDay = isCurrentMonth && hasPunch && (isRestDay || isPastMonth),
                                 shiftType = shiftType,
+                                isMissingPunch = isMissingPunch,
                                 onLongPress = {
                                     if (isCurrentMonth) {
                                         dialogDate = date
@@ -875,7 +888,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                         }
                                     }
 
-                                    val isClickable = isPunchLine && punchIndex != null && punchIndex < filteredPunches.size && targetDate == today
+                                    val isClickable = isPunchLine && punchIndex != null && punchIndex in filteredPunches.indices && targetDate != null && !targetDate.isAfter(today)
 
                                     if (isClickable) {
                                         Text(
@@ -918,6 +931,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                                                         val indexInPunches = punches.indexOf(oldTimestamp)
                                                                         if (indexInPunches != -1) {
                                                                             punches[indexInPunches] = newTimestamp
+                                                                            punches.sortByDescending { it }
                                                                             scope.launch { savePunches(context, punches) }
                                                                         }
                                                                     }
@@ -1000,68 +1014,16 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 summaryContent()
             }
         }
-    Column(
+    Box(
         modifier = Modifier
             .align(Alignment.BottomEnd)
             .padding(16.dp),
-        horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(gap)
+        contentAlignment = Alignment.BottomEnd
     ) {
         AnimatedVisibility(
-            visible = showMakeupFab,
-            enter = fadeIn() + scaleIn(),
-            exit = fadeOut() + scaleOut()
-        ) {
-            ExtendedFloatingActionButton(
-                modifier = Modifier,
-                containerColor = Color.Red,
-                contentColor = Color.White,
-                shape = RoundedCornerShape(20.dp),
-                onClick = {
-                    val targetDate = selectedDate ?: today
-                    val lastPunch = punches
-                        .filter { timestampToLocalDate(it) == targetDate }
-                        .maxOrNull()
-                    val defaultTime = lastPunch?.let {
-                        val lastTime = Instant.ofEpochMilli(it)
-                            .atZone(ZoneId.systemDefault())
-                            .toLocalTime()
-                        val candidate = lastTime.plusMinutes(1)
-                        if (candidate.isBefore(lastTime)) LocalTime.of(23, 59) else candidate
-                    } ?: LocalTime.now()
-                    TimePickerDialog(
-                        context,
-                        { _, hour, minute ->
-                            val time = LocalTime.of(hour, minute)
-                            val timestamp = LocalDateTime.of(targetDate, time)
-                                .atZone(ZoneId.systemDefault())
-                                .toInstant()
-                                .toEpochMilli()
-                            if (lastPunch != null && timestamp <= lastPunch) {
-                                Toast.makeText(context, "补打卡时间需晚于当天最后一次打卡", Toast.LENGTH_SHORT).show()
-                            } else if (timestamp > System.currentTimeMillis()) {
-                                Toast.makeText(context, "不能选择未来时间", Toast.LENGTH_SHORT).show()
-                            } else {
-                                punches.add(0, timestamp)
-                                scope.launch { savePunches(context, punches) }
-                            }
-                        },
-                        defaultTime.hour,
-                        defaultTime.minute,
-                        true
-                    ).show()
-                }
-            ) {
-                Text(
-                    text = "补打卡",
-                    style = MaterialTheme.typography.titleMedium
-                )
-            }
-        }
-        AnimatedVisibility(
             visible = baseFabVisible,
-            enter = fadeIn() + scaleIn(),
-            exit = fadeOut() + scaleOut()
+            enter = scaleIn(initialScale = 0f),
+            exit = scaleOut(targetScale = 0f)
         ) {
             ExtendedFloatingActionButton(
                 modifier = Modifier,
@@ -1091,6 +1053,71 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             ) {
                 Text(
                     text = if (cooldownSeconds > 0) "${fabLabel}(${cooldownSeconds}s)" else fabLabel,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+        AnimatedVisibility(
+            visible = showMakeupFab,
+            enter = scaleIn(initialScale = 0f),
+            exit = scaleOut(targetScale = 0f)
+        ) {
+            ExtendedFloatingActionButton(
+                modifier = Modifier,
+                containerColor = MaterialTheme.colorScheme.error.copy(alpha = 0.6f),
+                contentColor = Color.White,
+                shape = RoundedCornerShape(20.dp),
+                elevation = FloatingActionButtonDefaults.elevation(
+                    defaultElevation = 0.dp,
+                    pressedElevation = 0.dp,
+                    focusedElevation = 0.dp,
+                    hoveredElevation = 0.dp
+                ),
+                onClick = {
+                    val targetDate = selectedDate ?: today
+                    val targetPunches = punches.filter { timestampToLocalDate(it) == targetDate }
+                    if (targetPunches.isEmpty()) {
+                        fullDayMakeupTargetDate = targetDate
+                        fullDayMakeupTimes.clear()
+                        fullDayMakeupTimes.add(LocalTime.of(9, 0))
+                        fullDayMakeupTimes.add(LocalTime.of(18, 0))
+                        showFullDayMakeupDialog = true
+                    } else {
+                        val lastPunch = targetPunches.maxOrNull()
+                        val defaultTime = lastPunch?.let {
+                            val lastTime = Instant.ofEpochMilli(it)
+                                .atZone(ZoneId.systemDefault())
+                                .toLocalTime()
+                            val candidate = lastTime.plusMinutes(1)
+                            if (candidate.isBefore(lastTime)) LocalTime.of(23, 59) else candidate
+                        } ?: LocalTime.now()
+                        TimePickerDialog(
+                            context,
+                            { _, hour, minute ->
+                                val time = LocalTime.of(hour, minute)
+                                val timestamp = LocalDateTime.of(targetDate, time)
+                                    .atZone(ZoneId.systemDefault())
+                                    .toInstant()
+                                    .toEpochMilli()
+                                if (lastPunch != null && timestamp <= lastPunch) {
+                                    Toast.makeText(context, "补打卡时间需晚于当天最后一次打卡", Toast.LENGTH_SHORT).show()
+                                } else if (timestamp > System.currentTimeMillis()) {
+                                    Toast.makeText(context, "不能选择未来时间", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    punches.add(0, timestamp)
+                                    punches.sortByDescending { it }
+                                    scope.launch { savePunches(context, punches) }
+                                }
+                            },
+                            defaultTime.hour,
+                            defaultTime.minute,
+                            true
+                        ).show()
+                    }
+                }
+            ) {
+                Text(
+                    text = "补打卡",
                     style = MaterialTheme.typography.titleMedium
                 )
             }
@@ -1188,6 +1215,138 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
             },
             dismissButton = {
                 TextButton(onClick = { clearPunchDate = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
+    if (showFullDayMakeupDialog && fullDayMakeupTargetDate != null) {
+        val targetDate = fullDayMakeupTargetDate!!
+        AlertDialog(
+            onDismissRequest = { showFullDayMakeupDialog = false },
+            title = {
+                Text(
+                    text = "工作日补打卡",
+                    style = MaterialTheme.typography.titleLarge
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "${targetDate.format(DateTimeFormatter.ofPattern("M月d日", locale))} 暂无打卡记录，需至少补录两次打卡时间戳（上班和下班）：",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 240.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        itemsIndexed(fullDayMakeupTimes) { index, time ->
+                            val isClockIn = index % 2 == 0
+                            val label = if (isClockIn) "第${index + 1}次 (上班)" else "第${index + 1}次 (下班)"
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                                    .clickable {
+                                        TimePickerDialog(
+                                            context,
+                                            { _, hour, minute ->
+                                                fullDayMakeupTimes[index] = LocalTime.of(hour, minute)
+                                            },
+                                            time.hour,
+                                            time.minute,
+                                            true
+                                        ).show()
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = time.format(DateTimeFormatter.ofPattern("HH:mm", locale)),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    if (fullDayMakeupTimes.size > 2) {
+                                        TextButton(
+                                            onClick = { fullDayMakeupTimes.removeAt(index) },
+                                            modifier = Modifier.padding(0.dp)
+                                        ) {
+                                            Text(
+                                                text = "删除",
+                                                color = MaterialTheme.colorScheme.error,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    TextButton(
+                        onClick = {
+                            val lastTime = fullDayMakeupTimes.lastOrNull() ?: LocalTime.of(18, 0)
+                            val nextTime = lastTime.plusHours(1)
+                            fullDayMakeupTimes.add(if (nextTime.isAfter(lastTime)) nextTime else LocalTime.of(23, 59))
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text("+ 添加打卡时间")
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (fullDayMakeupTimes.size < 2) {
+                            Toast.makeText(context, "至少需要输入两次时间戳", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        for (i in 0 until fullDayMakeupTimes.size - 1) {
+                            if (!fullDayMakeupTimes[i].isBefore(fullDayMakeupTimes[i + 1])) {
+                                Toast.makeText(context, "打卡时间必须依次递增", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                        }
+                        val zone = ZoneId.systemDefault()
+                        val nowMillis = System.currentTimeMillis()
+                        val newTimestamps = fullDayMakeupTimes.map { time ->
+                            LocalDateTime.of(targetDate, time).atZone(zone).toInstant().toEpochMilli()
+                        }
+                        if (newTimestamps.any { it > nowMillis }) {
+                            Toast.makeText(context, "打卡时间不能晚于当前时间", Toast.LENGTH_SHORT).show()
+                            return@Button
+                        }
+                        punches.addAll(newTimestamps)
+                        punches.sortByDescending { it }
+                        scope.launch { savePunches(context, punches) }
+                        showFullDayMakeupDialog = false
+                        Toast.makeText(context, "补打卡成功", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("确定补打卡")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFullDayMakeupDialog = false }) {
                     Text("取消")
                 }
             }
@@ -1759,7 +1918,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                 Instant.ofEpochMilli(deleteTargetTimestamp),
                 ZoneId.systemDefault()
             )
-            val formatter = DateTimeFormatter.ofPattern("HH:mm:ss", locale)
+            val formatter = DateTimeFormatter.ofPattern("M月d日 HH:mm:ss", locale)
             dateTime.format(formatter)
         }
         AlertDialog(
@@ -2555,7 +2714,8 @@ private fun DayCell(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     isSelected: Boolean = false,
-    shiftType: String? = null
+    shiftType: String? = null,
+    isMissingPunch: Boolean = false
 ) {
     val textColor = when {
         !isCurrentMonth -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
@@ -2605,10 +2765,10 @@ private fun DayCell(
             modifier = Modifier.fillMaxSize()
         ) {
             Text(
-                text = date.dayOfMonth.toString(),
-                color = textColor,
+                text = if (isMissingPunch) "!" else date.dayOfMonth.toString(),
+                color = if (isMissingPunch) MaterialTheme.colorScheme.error.copy(alpha = 0.6f) else textColor,
                 style = MaterialTheme.typography.bodyLarge,
-                fontWeight = if (shiftType != null) FontWeight.SemiBold else FontWeight.Normal
+                fontWeight = if (isMissingPunch) FontWeight.Bold else if (shiftType != null) FontWeight.SemiBold else FontWeight.Normal
             )
             if (isCurrentMonth && shiftType != null) {
                 Box(
