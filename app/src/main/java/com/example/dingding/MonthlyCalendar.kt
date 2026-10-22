@@ -113,8 +113,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.scale
 import kotlinx.coroutines.Job
@@ -1578,258 +1580,91 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         val remainingMin = (remainingSeconds / 60) % 60
         val remainingHr = remainingSeconds / 3600
 
-        AlertDialog(
-            onDismissRequest = { showTodayTimerDialog = false },
-            text = {
+        Dialog(
+            onDismissRequest = { showTodayTimerDialog = false }
+        ) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp)
+            ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth(0.8f)
-                            .aspectRatio(1f),
-                        contentAlignment = Alignment.Center
+                    val primaryColor = MaterialTheme.colorScheme.primary
+                    val errorColor = MaterialTheme.colorScheme.error
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        val primaryColor = MaterialTheme.colorScheme.primary
-                        val onSurfaceColor = MaterialTheme.colorScheme.onSurface
-                        val errorColor = MaterialTheme.colorScheme.error
+                        ClockDial(
+                            label = "小时",
+                            totalUnits = 12,
+                            quarterLabels = listOf("12", "3", "6", "9"),
+                            handAngleDegrees = ((hours % 12 + minutes / 60f + seconds / 3600f) * 30f - 90f),
+                            handColor = primaryColor,
+                            handStrokeWidth = 2.5.dp,
+                            handLengthRatio = 0.62f,
+                            isSecondHand = false,
+                            modifier = Modifier.weight(1f)
+                        )
 
-                        val textPaintLarge = remember(onSurfaceColor) {
-                            android.graphics.Paint().apply {
-                                textAlign = android.graphics.Paint.Align.CENTER
-                                textSize = 32f
-                                isAntiAlias = true
-                                color = android.graphics.Color.argb(
-                                    (onSurfaceColor.alpha * 255).toInt(),
-                                    (onSurfaceColor.red * 255).toInt(),
-                                    (onSurfaceColor.green * 255).toInt(),
-                                    (onSurfaceColor.blue * 255).toInt()
-                                )
-                            }
-                        }
-                        val textPaintSmall = remember(onSurfaceColor) {
-                            android.graphics.Paint().apply {
-                                textAlign = android.graphics.Paint.Align.CENTER
-                                textSize = 20f
-                                isAntiAlias = true
-                                color = android.graphics.Color.argb(
-                                    (onSurfaceColor.alpha * 255).toInt(),
-                                    (onSurfaceColor.red * 255).toInt(),
-                                    (onSurfaceColor.green * 255).toInt(),
-                                    (onSurfaceColor.blue * 255).toInt()
-                                )
-                            }
-                        }
+                        ClockDial(
+                            label = "分钟",
+                            totalUnits = 60,
+                            quarterLabels = listOf("60", "15", "30", "45"),
+                            handAngleDegrees = ((minutes + seconds / 60f) * 6f - 90f),
+                            handColor = primaryColor,
+                            handStrokeWidth = 2.dp,
+                            handLengthRatio = 0.76f,
+                            isSecondHand = false,
+                            modifier = Modifier.weight(1f)
+                        )
 
-                        androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
-                            val center = androidx.compose.ui.geometry.Offset(size.width / 2, size.height / 2)
-                            val radius = size.width / 2
-
-                            // 1. 大秒表（分钟）
-                            drawCircle(
-                                color = onSurfaceColor.copy(alpha = 0.1f),
-                                radius = radius,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4.dp.toPx())
-                            )
-
-                            // 分钟刻度 (60 ticks)
-                            for (i in 0 until 60) {
-                                val angle = (i * 6 - 90) * (Math.PI / 180f)
-                                val innerRadius = if (i % 5 == 0) radius - 12.dp.toPx() else radius - 6.dp.toPx()
-                                val strokeWidth = if (i % 5 == 0) 2.dp.toPx() else 1.dp.toPx()
-                                
-                                val start = androidx.compose.ui.geometry.Offset(
-                                    x = center.x + innerRadius * kotlin.math.cos(angle).toFloat(),
-                                    y = center.y + innerRadius * kotlin.math.sin(angle).toFloat()
-                                )
-                                val end = androidx.compose.ui.geometry.Offset(
-                                    x = center.x + radius * kotlin.math.cos(angle).toFloat(),
-                                    y = center.y + radius * kotlin.math.sin(angle).toFloat()
-                                )
-                                drawLine(
-                                    color = onSurfaceColor.copy(alpha = 0.5f),
-                                    start = start,
-                                    end = end,
-                                    strokeWidth = strokeWidth
-                                )
-
-                                // 刻度数字
-                                if (i % 5 == 0) {
-                                    val text = if (i == 0) "60" else i.toString()
-                                    val textRadius = radius - 14.dp.toPx()
-                                    val textX = center.x + textRadius * kotlin.math.cos(angle).toFloat()
-                                    val textY = center.y + textRadius * kotlin.math.sin(angle).toFloat() - (textPaintLarge.descent() + textPaintLarge.ascent()) / 2
-                                    drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaintLarge)
-                                }
-                            }
-
-                            // 分针
-                            val minuteAngle = ((minutes + seconds / 60f) * 6 - 90) * (Math.PI / 180f)
-                            val minHandLength = radius - 20.dp.toPx()
-                            drawLine(
-                                color = primaryColor,
-                                start = center,
-                                end = androidx.compose.ui.geometry.Offset(
-                                    x = center.x + minHandLength * kotlin.math.cos(minuteAngle).toFloat(),
-                                    y = center.y + minHandLength * kotlin.math.sin(minuteAngle).toFloat()
-                                ),
-                                strokeWidth = 4.dp.toPx(),
-                                cap = androidx.compose.ui.graphics.StrokeCap.Round
-                            )
-
-                            // 2. 小秒表（秒钟），放在下方
-                            val smallRadius = radius * 0.35f
-                            val smallCenter = androidx.compose.ui.geometry.Offset(center.x, center.y + radius * 0.4f)
-
-                            drawCircle(
-                                color = onSurfaceColor.copy(alpha = 0.1f),
-                                radius = smallRadius,
-                                center = smallCenter,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                            )
-
-                            // 秒钟刻度 (60 ticks)
-                            for (i in 0 until 60) {
-                                val angle = (i * 6 - 90) * (Math.PI / 180f)
-                                val isQuarter = i % 15 == 0
-                                val isFive = i % 5 == 0
-                                val innerRadius = if (isQuarter) smallRadius - 8.dp.toPx() else if (isFive) smallRadius - 6.dp.toPx() else smallRadius - 3.dp.toPx()
-                                val strokeWidth = if (isFive) 1.5f.dp.toPx() else 0.5f.dp.toPx()
-                                
-                                val start = androidx.compose.ui.geometry.Offset(
-                                    x = smallCenter.x + innerRadius * kotlin.math.cos(angle).toFloat(),
-                                    y = smallCenter.y + innerRadius * kotlin.math.sin(angle).toFloat()
-                                )
-                                val end = androidx.compose.ui.geometry.Offset(
-                                    x = smallCenter.x + smallRadius * kotlin.math.cos(angle).toFloat(),
-                                    y = smallCenter.y + smallRadius * kotlin.math.sin(angle).toFloat()
-                                )
-                                drawLine(
-                                    color = onSurfaceColor.copy(alpha = 0.5f),
-                                    start = start,
-                                    end = end,
-                                    strokeWidth = strokeWidth
-                                )
-
-                                // 刻度数字
-                                if (isQuarter) {
-                                    val text = if (i == 0) "60" else i.toString()
-                                    val textRadius = smallRadius - 9.dp.toPx()
-                                    val textX = smallCenter.x + textRadius * kotlin.math.cos(angle).toFloat()
-                                    val textY = smallCenter.y + textRadius * kotlin.math.sin(angle).toFloat() - (textPaintSmall.descent() + textPaintSmall.ascent()) / 2
-                                    drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaintSmall)
-                                }
-                            }
-
-                            // 秒针
-                            val secondAngle = (seconds * 6 - 90) * (Math.PI / 180f)
-                            val secHandLength = smallRadius - 8.dp.toPx()
-                            drawLine(
-                                color = errorColor,
-                                start = smallCenter,
-                                end = androidx.compose.ui.geometry.Offset(
-                                    x = smallCenter.x + secHandLength * kotlin.math.cos(secondAngle).toFloat(),
-                                    y = smallCenter.y + secHandLength * kotlin.math.sin(secondAngle).toFloat()
-                                ),
-                                strokeWidth = 2.dp.toPx(),
-                                cap = androidx.compose.ui.graphics.StrokeCap.Round
-                            )
-
-                            // 3. 小表盘（小时），放在上方
-                            val hourRadius = radius * 0.35f
-                            val hourCenter = androidx.compose.ui.geometry.Offset(center.x, center.y - radius * 0.4f)
-
-                            drawCircle(
-                                color = onSurfaceColor.copy(alpha = 0.1f),
-                                radius = hourRadius,
-                                center = hourCenter,
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                            )
-
-                            // 小时刻度 (12 ticks)
-                            for (i in 0 until 12) {
-                                val angle = (i * 30 - 90) * (Math.PI / 180f)
-                                val isQuarter = i % 3 == 0
-                                val innerRadius = if (isQuarter) hourRadius - 8.dp.toPx() else hourRadius - 4.dp.toPx()
-                                val strokeWidth = if (isQuarter) 1.5f.dp.toPx() else 0.5f.dp.toPx()
-                                
-                                val start = androidx.compose.ui.geometry.Offset(
-                                    x = hourCenter.x + innerRadius * kotlin.math.cos(angle).toFloat(),
-                                    y = hourCenter.y + innerRadius * kotlin.math.sin(angle).toFloat()
-                                )
-                                val end = androidx.compose.ui.geometry.Offset(
-                                    x = hourCenter.x + hourRadius * kotlin.math.cos(angle).toFloat(),
-                                    y = hourCenter.y + hourRadius * kotlin.math.sin(angle).toFloat()
-                                )
-                                drawLine(
-                                    color = onSurfaceColor.copy(alpha = 0.5f),
-                                    start = start,
-                                    end = end,
-                                    strokeWidth = strokeWidth
-                                )
-
-                                // 刻度数字
-                                if (isQuarter) {
-                                    val text = if (i == 0) "12" else i.toString()
-                                    val textRadius = hourRadius - 9.dp.toPx()
-                                    val textX = hourCenter.x + textRadius * kotlin.math.cos(angle).toFloat()
-                                    val textY = hourCenter.y + textRadius * kotlin.math.sin(angle).toFloat() - (textPaintSmall.descent() + textPaintSmall.ascent()) / 2
-                                    drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaintSmall)
-                                }
-                            }
-
-                            // 时针
-                            val hourAngle = ((hours % 12 + minutes / 60f) * 30 - 90) * (Math.PI / 180f)
-                            val hourHandLength = hourRadius - 8.dp.toPx()
-                            drawLine(
-                                color = primaryColor,
-                                start = hourCenter,
-                                end = androidx.compose.ui.geometry.Offset(
-                                    x = hourCenter.x + hourHandLength * kotlin.math.cos(hourAngle).toFloat(),
-                                    y = hourCenter.y + hourHandLength * kotlin.math.sin(hourAngle).toFloat()
-                                ),
-                                strokeWidth = 2.5f.dp.toPx(),
-                                cap = androidx.compose.ui.graphics.StrokeCap.Round
-                            )
-                            
-                            // 绘制中心点
-                            drawCircle(
-                                color = primaryColor,
-                                radius = 4.dp.toPx(),
-                                center = center
-                            )
-                            drawCircle(
-                                color = errorColor,
-                                radius = 2.dp.toPx(),
-                                center = smallCenter
-                            )
-                            drawCircle(
-                                color = primaryColor,
-                                radius = 2.dp.toPx(),
-                                center = hourCenter
-                            )
-                        }
-                    }
-                    
-                    Text(
-                        text = "已打卡: " + String.format(locale, "%02d:%02d:%02d", hours, minutes, seconds),
-                        style = MaterialTheme.typography.headlineMedium,
-                        textAlign = TextAlign.Center
-                    )
-                    if (realtimeRemainingMillis > 0) {
-                        Text(
-                            text = "本月还需打卡: " + String.format(locale, "%02d:%02d:%02d", remainingHr, remainingMin, remainingSec),
-                            style = MaterialTheme.typography.bodyLarge,
-                            textAlign = TextAlign.Center,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        ClockDial(
+                            label = "秒",
+                            totalUnits = 60,
+                            quarterLabels = listOf("60", "15", "30", "45"),
+                            handAngleDegrees = (seconds * 6f - 90f),
+                            handColor = errorColor,
+                            handStrokeWidth = 1.5.dp,
+                            handLengthRatio = 0.82f,
+                            isSecondHand = true,
+                            modifier = Modifier.weight(1f)
                         )
                     }
+
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Text(
+                            text = "已打卡: " + String.format(locale, "%02d:%02d:%02d", hours, minutes, seconds),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            textAlign = TextAlign.Center
+                        )
+                        if (realtimeRemainingMillis > 0) {
+                            Text(
+                                text = "本月还需打卡: " + String.format(locale, "%02d:%02d:%02d", remainingHr, remainingMin, remainingSec),
+                                style = MaterialTheme.typography.bodySmall,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
-            },
-            confirmButton = {}
-        )
+            }
+        }
     }
 
     if (showMonthlyStatsDialog) {
@@ -2577,6 +2412,162 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
         )
     }
 
+}
+
+@Composable
+private fun ClockDial(
+    label: String,
+    totalUnits: Int,
+    quarterLabels: List<String>,
+    handAngleDegrees: Float,
+    handColor: Color,
+    handStrokeWidth: Dp,
+    handLengthRatio: Float,
+    isSecondHand: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
+
+    val textPaint = remember(onSurfaceColor) {
+        android.graphics.Paint().apply {
+            textAlign = android.graphics.Paint.Align.CENTER
+            isAntiAlias = true
+            typeface = android.graphics.Typeface.create(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD)
+            color = android.graphics.Color.argb(
+                (onSurfaceColor.alpha * 180).toInt(),
+                (onSurfaceColor.red * 255).toInt(),
+                (onSurfaceColor.green * 255).toInt(),
+                (onSurfaceColor.blue * 255).toInt()
+            )
+        }
+    }
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f),
+            contentAlignment = Alignment.Center
+        ) {
+            androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize()) {
+                val center = androidx.compose.ui.geometry.Offset(size.width / 2f, size.height / 2f)
+                val radius = size.width / 2f - 2.dp.toPx()
+
+                // 表盘背景与外圈边框
+                drawCircle(
+                    color = onSurfaceColor.copy(alpha = 0.04f),
+                    radius = radius,
+                    center = center
+                )
+                drawCircle(
+                    color = onSurfaceColor.copy(alpha = 0.15f),
+                    radius = radius,
+                    center = center,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5.dp.toPx())
+                )
+
+                textPaint.textSize = radius * 0.22f
+                val stepAngle = 360f / totalUnits
+
+                for (i in 0 until totalUnits) {
+                    val angleRad = (i * stepAngle - 90f) * (Math.PI / 180f)
+                    val isQuarter = (i % (totalUnits / 4) == 0)
+                    val isFive = (totalUnits == 60 && i % 5 == 0)
+
+                    val tickLength = when {
+                        isQuarter -> radius * 0.18f
+                        isFive -> radius * 0.13f
+                        else -> radius * 0.08f
+                    }
+                    val strokeW = when {
+                        isQuarter -> 1.8.dp.toPx()
+                        isFive -> 1.2.dp.toPx()
+                        else -> 0.7.dp.toPx()
+                    }
+                    val alpha = when {
+                        isQuarter -> 0.65f
+                        isFive -> 0.45f
+                        else -> 0.25f
+                    }
+
+                    val start = androidx.compose.ui.geometry.Offset(
+                        x = center.x + (radius - tickLength) * kotlin.math.cos(angleRad).toFloat(),
+                        y = center.y + (radius - tickLength) * kotlin.math.sin(angleRad).toFloat()
+                    )
+                    val end = androidx.compose.ui.geometry.Offset(
+                        x = center.x + radius * kotlin.math.cos(angleRad).toFloat(),
+                        y = center.y + radius * kotlin.math.sin(angleRad).toFloat()
+                    )
+                    drawLine(
+                        color = onSurfaceColor.copy(alpha = alpha),
+                        start = start,
+                        end = end,
+                        strokeWidth = strokeW
+                    )
+
+                    // 4个刻度数字 (上、右、下、左)
+                    if (isQuarter) {
+                        val quarterIndex = (i / (totalUnits / 4)) % quarterLabels.size
+                        val text = quarterLabels[quarterIndex]
+                        val textRadius = radius * 0.65f
+                        val textX = center.x + textRadius * kotlin.math.cos(angleRad).toFloat()
+                        val textY = center.y + textRadius * kotlin.math.sin(angleRad).toFloat() - (textPaint.descent() + textPaint.ascent()) / 2
+                        drawContext.canvas.nativeCanvas.drawText(text, textX, textY, textPaint)
+                    }
+                }
+
+                // 指针
+                val handAngleRad = handAngleDegrees * (Math.PI / 180f)
+                val handLength = radius * handLengthRatio
+                val handEnd = androidx.compose.ui.geometry.Offset(
+                    x = center.x + handLength * kotlin.math.cos(handAngleRad).toFloat(),
+                    y = center.y + handLength * kotlin.math.sin(handAngleRad).toFloat()
+                )
+
+                if (isSecondHand) {
+                    // 秒针带配重尾部
+                    val tailLength = radius * 0.18f
+                    val tailStart = androidx.compose.ui.geometry.Offset(
+                        x = center.x - tailLength * kotlin.math.cos(handAngleRad).toFloat(),
+                        y = center.y - tailLength * kotlin.math.sin(handAngleRad).toFloat()
+                    )
+                    drawLine(
+                        color = handColor,
+                        start = tailStart,
+                        end = handEnd,
+                        strokeWidth = handStrokeWidth.toPx(),
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round
+                    )
+                } else {
+                    drawLine(
+                        color = handColor,
+                        start = center,
+                        end = handEnd,
+                        strokeWidth = handStrokeWidth.toPx(),
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round
+                    )
+                }
+
+                // 中心轴点
+                val centerRadius = if (isSecondHand) 2.5.dp.toPx() else 3.5.dp.toPx()
+                drawCircle(
+                    color = handColor,
+                    radius = centerRadius,
+                    center = center
+                )
+            }
+        }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Medium
+        )
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
