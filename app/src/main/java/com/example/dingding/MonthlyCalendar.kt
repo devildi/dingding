@@ -189,7 +189,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
     var adjustInfo by remember(context) { mutableStateOf(loadAdjustInfo(context)) }
     var adjustFormula by remember { mutableStateOf("") }
     var adjustDate by remember { mutableStateOf(LocalDate.now().minusDays(1)) }
-    var adjustTime by remember { mutableStateOf(LocalTime.now()) }
+    var adjustTime by remember { mutableStateOf(LocalTime.MAX) }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -619,7 +619,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 onClick = {
                                     adjustFormula = ""
                                     adjustDate = LocalDate.now().minusDays(1)
-                                    adjustTime = LocalTime.now()
+                                    adjustTime = LocalTime.MAX
                                     showAdjustDialog = true
                                 },
                                 onLongClick = {
@@ -1390,9 +1390,9 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                         TimePickerDialog(
                             contextForPicker,
                             { _, hour, minute ->
-                                val selectedTime = LocalTime.of(hour, minute)
+                                val selectedTime = LocalTime.of(hour, minute, 59, 999_999_999)
                                 val nowTime = LocalTime.now()
-                                adjustTime = if (selectedTime.isAfter(nowTime)) {
+                                adjustTime = if (adjustDate == today && selectedTime.isAfter(nowTime)) {
                                     nowTime
                                 } else {
                                     selectedTime
@@ -1412,9 +1412,8 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                                 { _, y, m, d ->
                                     val newDate = LocalDate.of(y, m + 1, d)
                                     adjustDate = newDate
-                                    if (newDate == today) {
-                                        showTimePicker()
-                                    }
+                                    adjustTime = if (newDate == today) LocalTime.now() else LocalTime.MAX
+                                    showTimePicker()
                                 },
                                 initial.year,
                                 initial.monthValue - 1,
@@ -1430,18 +1429,16 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     ) {
                         Text("精确工时截止日：${adjustDate.format(dateFormatter)}")
                     }
-                    if (adjustDate == today) {
-                        Button(
-                            onClick = {
-                                showTimePicker()
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(56.dp)
-                        ) {
-                            Text("精确时间：${adjustTime.format(timeFormatter)}")
-                        }
+                    Button(
+                        onClick = {
+                            showTimePicker()
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                    ) {
+                        Text("精确时间：${adjustTime.format(timeFormatter)}")
                     }
                 }
             },
@@ -1454,12 +1451,7 @@ fun MonthlyCalendar(modifier: Modifier = Modifier) {
                     }
                     var finalDate = adjustDate
                     var finalTime = adjustTime
-                    var endDateTime = if (finalDate == today) {
-                        LocalDateTime.of(finalDate, finalTime)
-                    } else {
-                        // 非当天选择时，覆盖到该日 23:59:59.999999999
-                        finalDate.plusDays(1).atStartOfDay().minusNanos(1)
-                    }
+                    var endDateTime = LocalDateTime.of(finalDate, finalTime)
                     val nowDateTime = LocalDateTime.now()
                     if (endDateTime.isAfter(nowDateTime)) {
                         finalDate = LocalDate.now()
@@ -3156,21 +3148,22 @@ private fun MonthlyStatsDialog(
     val locale = LocalContext.current.resources.configuration.locales[0] ?: Locale.getDefault()
     
     val stats = remember(yearMonth, punches, overrides, today, adjustInfo) {
-        val adjustedEndDate = if (adjustInfo != null && adjustInfo.month == yearMonth) {
-            timestampToLocalDate(adjustInfo.endMillis)
+        val adjustedEnd = if (adjustInfo != null && adjustInfo.month == yearMonth) {
+            adjustInfo.endMillis
         } else null
+        val adjustedEndDate = adjustedEnd?.let { timestampToLocalDate(it) }
 
         val daysInMonth = (1..yearMonth.lengthOfMonth()).map { yearMonth.atDay(it) }
         val now = System.currentTimeMillis()
         daysInMonth.filter { date ->
-            val isAdjusted = adjustedEndDate != null && (date < adjustedEndDate || date == adjustedEndDate)
+            val isFullyAdjusted = adjustedEndDate != null && date < adjustedEndDate
             val isDateValid = if (date == today) {
                 val todayPunches = punches.filter { timestampToLocalDate(it) == today }
                 todayPunches.isNotEmpty()
             } else {
                 date < today
             }
-            isDateValid && !isAdjusted
+            isDateValid && !isFullyAdjusted
         }.map { date ->
             val isWorkday = overrides[date] ?: isDefaultWorkday(date)
             val dailyPunches = punches.filter { timestampToLocalDate(it) == date }.sorted()
@@ -3179,12 +3172,13 @@ private fun MonthlyStatsDialog(
                 val start = dailyPunches[i]
                 val end = dailyPunches.getOrNull(i + 1)
                 if (end != null) {
-                    if (end >= start) {
+                    // 只有下班时间戳晚于修正截止时间的成对打卡，才未包含在修正工时内，整段计入后续工时
+                    if (end >= start && (adjustedEnd == null || end > adjustedEnd)) {
                         dailyTotalMillis += (end - start)
                     }
                 } else if (date == today) {
                     // 今日奇数次打卡（上班进行中），实时计算从打卡起到当前的时间
-                    if (now > start) {
+                    if (now > start && (adjustedEnd == null || now > adjustedEnd)) {
                         dailyTotalMillis += (now - start)
                     }
                 }
@@ -3286,9 +3280,18 @@ private fun MonthlyStatsDialog(
                     
                     if (adjustInfo != null && adjustInfo.month == yearMonth) {
                         item {
-                            val adjustedEndDate = timestampToLocalDate(adjustInfo.endMillis)
+                            val adjustedEndDateTime = LocalDateTime.ofInstant(
+                                Instant.ofEpochMilli(adjustInfo.endMillis),
+                                ZoneId.systemDefault()
+                            )
+                            val adjustedEndDate = adjustedEndDateTime.toLocalDate()
                             val startLabel = "${yearMonth.monthValue}/1"
-                            val endLabel = "${adjustedEndDate.monthValue}/${adjustedEndDate.dayOfMonth}"
+                            val isEndOfDay = adjustedEndDateTime.hour == 23 && adjustedEndDateTime.minute == 59
+                            val endLabel = if (isEndOfDay) {
+                                "${adjustedEndDate.monthValue}/${adjustedEndDate.dayOfMonth}"
+                            } else {
+                                "${adjustedEndDate.monthValue}/${adjustedEndDate.dayOfMonth} ${String.format(locale, "%02d:%02d", adjustedEndDateTime.hour, adjustedEndDateTime.minute)}"
+                            }
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3331,12 +3334,47 @@ private fun calculateMonthHoursWithAdjust(
         return millis / 3_600_000.0
     }
     val adjustedEnd = adjustInfo.endMillis.coerceAtMost(end)
-    if (adjustedEnd <= start) {
+    if (adjustedEnd < start) {
         val millis = calculateWorkedMillis(punches, start, end)
         return millis / 3_600_000.0
     }
-    val afterMillis = calculateWorkedMillis(punches, adjustedEnd, end)
+    val afterMillis = calculateWorkedMillisAfterAdjust(punches, month, adjustedEnd)
     return adjustInfo.hours + afterMillis / 3_600_000.0
+}
+
+/**
+ * 统计当月在修正截止时间之后才完成配对（即下班卡 end > adjustedEnd）的完整成对工时。
+ * 若某段打卡在 adjustedEnd 时尚未打下班卡（例如 09:00~14:00，修正时间为 10:00），
+ * 则该段未包含在修正工时中，下班后整段（14:00 - 09:00 = 5h）计入后续工时；
+ * 若某段打卡在 adjustedEnd 前已完成成对（例如 09:00~14:00，修正时间为 16:00），
+ * 则该段已包含在修正工时中，不再重复计入。
+ */
+private fun calculateWorkedMillisAfterAdjust(
+    punches: List<Long>,
+    month: YearMonth,
+    adjustedEnd: Long
+): Long {
+    if (punches.isEmpty()) return 0L
+    val sorted = punches.sorted()
+    var total = 0L
+    var i = 0
+    while (i < sorted.size) {
+        val start = sorted[i]
+        val end = sorted.getOrNull(i + 1)
+        val startDate = timestampToLocalDate(start)
+
+        // 只在同一个自然日内两两配对；跨天则说明当天是奇数条，最后一条单独记录不参与工时计算
+        if (end == null || startDate != timestampToLocalDate(end)) {
+            i += 1
+            continue
+        }
+
+        if (YearMonth.from(startDate) == month && end > adjustedEnd && end > start) {
+            total += (end - start)
+        }
+        i += 2
+    }
+    return total
 }
 
 private fun calculateWorkedMillis(punches: List<Long>, rangeStart: Long, rangeEnd: Long): Long {
